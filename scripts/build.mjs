@@ -22,7 +22,8 @@ const common = {
 };
 const builds = [
   { ...common, entryPoints: { app: 'src/main.ts' }, outdir: `${outdir}/assets` },
-  { ...common, entryPoints: { 'storm.worker': 'src/workers/storm.worker.ts' }, outdir: `${outdir}/assets` }
+  { ...common, entryPoints: { 'storm.worker': 'src/workers/storm.worker.ts' }, outdir: `${outdir}/assets` },
+  { ...common, entryPoints: { 'sim.worker': 'src/sim/sim.worker.ts' }, outdir: `${outdir}/assets` }
 ];
 
 const copyStatic = async () => {

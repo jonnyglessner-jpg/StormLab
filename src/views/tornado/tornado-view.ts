@@ -1451,7 +1451,7 @@ export function mountTornado(root: HTMLElement): () => void {
     S.vrot = Math.round(0.5 * (lo + hi));
     const ban = document.createElement('div');
     ban.className = 'card'; ban.style.cssText = 'grid-template-columns:minmax(0,1fr) auto;align-items:center;border-color:var(--accent)';
-    const kind = __L.label === 'roll' ? 'A tornado rolled from your storm' : 'The typical tornado from your storm';
+    const kind = __L.label === 'roll' ? 'A tornado rolled from your storm' : __L.label === 'sim' ? 'The tornado from your simulated storm' : 'The typical tornado from your storm';
     ban.innerHTML = `<div><b>${kind}</b><p class="cap">Peak winds near ${p.peakMph} mph. Cloud base ${Number(p.zc).toLocaleString()} ft, moving ${p.vt} mph, ${p.precip === 'hp' ? 'HP (rain-wrapped)' : p.precip === 'lp' ? 'LP' : 'classic'} storm, from an environment with STP ${__L.stp.toFixed(1)}. Swirl ratio and core size follow from the storm's rotation and updraft. The sliders below hold these values; change them freely.</p></div><div class="row" style="gap:8px"><a href="#storm" style="color:var(--accent);font-weight:500">Back to the storm</a><button type="button" id="__unlink">Use presets instead</button></div>`;
     root.querySelector('.bench').before(ban);
     ban.querySelector('#__unlink').addEventListener('click', () => { app.link = null; ban.remove(); Object.assign(S, PRESETS.classic); precip = 'classic'; document.querySelectorAll('[data-r]').forEach(x => x.setAttribute('aria-pressed', x.dataset.r === 'classic' ? 'true' : 'false')); document.querySelectorAll('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === 'classic' ? 'true' : 'false')); syncInputs(); settle(); });

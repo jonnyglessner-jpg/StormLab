@@ -1,5 +1,6 @@
 /** Markup for the storm view. */
 import { PRESETS } from '../../presets';
+import { SIM_BAR_HTML, SIM_CARD_HTML } from './sim-panel';
 
 export interface SliderDef { k: 'T0F' | 'TdF' | 'lapse' | 'cap' | 'llj' | 'shear' | 'upper'; label: string; min: number; max: number; step: number; fmt: (v: number) => string }
 
@@ -26,6 +27,12 @@ export const STORM_HTML = `
   </header>
   <section class="bench">
     <div class="stagecol">
+      <div class="row" style="gap:10px">
+        <div class="seg" role="group" aria-label="Model" id="svMode" style="margin-left:0">
+          <button data-mode="instant" aria-pressed="true">Instant model</button><button data-mode="sim">Full simulation</button>
+        </div>
+        <span class="gpu-note" id="svModeCap">Instant: the storm this environment supports, worked out in a second.</span>
+      </div>
       <div class="stage">
         <canvas id="svGL" aria-label="Three-dimensional view of the storm" style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;cursor:grab;touch-action:none"></canvas>
         <canvas id="svRadar" aria-label="Radar view of the storm" hidden style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;background:#11171a"></canvas>
@@ -43,7 +50,7 @@ export const STORM_HTML = `
         <label id="svLabWrap"><input type="checkbox" id="svLab" checked> Labels</label>
         <button id="svSave" type="button">Save image</button>
         <span class="gpu-note" id="svGpu"></span>
-      </div>
+      </div>${SIM_BAR_HTML}
       <dl class="read" aria-live="polite">
         <div class="wide"><dt>Storm type</dt><dd><span id="rType">—</span><small id="rTypeSub">—</small></dd></div>
         <div class="wide"><dt>Updraft</dt><dd><span id="rW">—</span><small id="rWSub">—</small></dd></div>
@@ -64,7 +71,7 @@ export const STORM_HTML = `
           <button id="tRoll">Roll the dice</button>
         </div>
         <p class="cap" id="tRes" aria-live="polite"></p>
-      </div>
+      </div>${SIM_CARD_HTML}
     </div>
     <aside class="rack" aria-label="Environment">
       <div style="display:grid;gap:8px">
@@ -120,7 +127,7 @@ export const STORM_HTML = `
     <div style="display:grid;gap:10px">
       <h2>Limits</h2>
       <ul>
-        <li>This is a diagnostic model, not a cloud model. The storm is steady: it doesn’t grow, cycle or interact with other storms, and the flow fields are shaped to match observed supercell structure rather than solved. A time-stepping cloud model on the GPU is the next stage of the project.</li>
+        <li>The instant model is diagnostic, not a cloud model. Its storm is steady: it doesn’t grow, cycle or interact with other storms, and its flow fields are shaped to match observed supercell structure rather than solved. Full simulation mode is the cloud model.</li>
         <li>No fronts, drylines, terrain or daytime heating changes. Storms form whenever CIN is weaker than about −200 J/kg, as if something lifted the air.</li>
         <li>Tornado odds are climatological. The same environment produces tornadoes on some days and not on others, which is why there’s a dice button.</li>
         <li>Radar reflectivity is calibrated to typical values. The pattern comes from the trajectories, but the exact dBZ numbers are approximate.</li>

@@ -14,6 +14,8 @@ import { drawEF } from './efchart';
 import { drawHodograph } from './hodograph';
 import { drawRadar } from './radar';
 import { drawSkewT } from './skewt';
+import { SimPanel } from './sim-panel';
+import { drawSimRadar } from './sim-radar';
 import { SLIDERS, STORM_HTML } from './template';
 
 const EFT = [65, 86, 111, 136, 166, 201];
@@ -65,7 +67,7 @@ export function mountStorm(root: HTMLElement): () => void {
   function take(r: ComputeResult) {
     const keep = RES?.vol ?? null;
     RES = r;
-    if (r.vol) renderer?.setVolume(r.vol); else RES.vol = keep;
+    if (r.vol) { if (st.mode === 'instant') renderer?.setVolume(r.vol); } else RES.vol = keep;
     need3D = needRadar = true;
   }
 
@@ -77,6 +79,7 @@ export function mountStorm(root: HTMLElement): () => void {
   function changed(full: boolean) {
     app.env = { ...o };
     diagnose();
+    if (E) panel.envChanged(E);
     tor = null; $('tRes').textContent = '';
     clearTimeout(settleT);
     if (full) request(fullOpt());
@@ -106,6 +109,27 @@ export function mountStorm(root: HTMLElement): () => void {
     need3D = needRadar = true;
   }
   all('[data-v]').forEach(b => on(b, 'click', () => setView(b.dataset.v as '3d' | 'radar')));
+
+  /* ---------- instant model vs full simulation ---------- */
+  const panel = new SimPanel({
+    root, env: () => E, storm: () => S, renderer: () => renderer,
+    redraw3D: () => { need3D = true; }, redrawRadar: () => { needRadar = true; }
+  });
+  cleanup.push(() => panel.destroy());
+  function setMode(m: 'instant' | 'sim') {
+    st.mode = m;
+    all('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === m ? 'true' : 'false'));
+    $('simBar').hidden = m !== 'sim'; $('simCard').hidden = m !== 'sim'; $('torCard').hidden = m === 'sim';
+    $('svLabWrap').style.visibility = m === 'sim' ? 'hidden' : '';
+    $('svModeCap').textContent = m === 'sim'
+      ? 'Full simulation: a 3-D cloud model grows the storm minute by minute. Press Run.'
+      : 'Instant: the storm this environment supports, worked out in a second.';
+    if (m === 'sim') { if (panel.driver) panel.attach(); }
+    else { if (panel.driver?.running) void panel.toggle(); if (RES?.vol) renderer?.setVolume(RES.vol); cam.tx = undefined; cam.ty = undefined; }
+    need3D = needRadar = true;
+    panel.redrawCharts();
+  }
+  all('[data-mode]').forEach(b => on(b, 'click', () => setMode(b.dataset.mode as 'instant' | 'sim')));
   all('[data-p]').forEach(b => on(b, 'click', () => {
     st.prod = b.dataset.p as 'dbz' | 'vel';
     all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
@@ -225,9 +249,20 @@ export function mountStorm(root: HTMLElement): () => void {
   function draw3D() {
     const tag = $('svTagL');
     if (!renderer) { tag.textContent = 'Starting the renderer…'; return; }
-    if (S && !S.forms) tag.textContent = 'Clear skies: no storm in this environment';
+    if (st.mode === 'sim' && panel.driver) {
+      // ease the camera toward the simulated storm's main updraft
+      const fx = panel.focus?.[0] ?? -5, fy = panel.focus?.[1] ?? 0;
+      cam.tx = (cam.tx ?? fx) + (fx - (cam.tx ?? fx)) * 0.08; cam.ty = (cam.ty ?? fy) + (fy - (cam.ty ?? fy)) * 0.08;
+      if (Math.hypot(fx - cam.tx, fy - cam.ty) > 0.05) need3D = true;
+      const az = cam.az * Math.PI / 180;
+      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, scroll to zoom`;
+      if (!captureOnly) renderer.render(cam, moving ? 0.5 : undefined);
+      return;
+    }
+    if (st.mode === 'sim') tag.textContent = 'Press Run to grow this storm from scratch in the cloud model. Shown until then: the instant model.';
+    else if (S && !S.forms) tag.textContent = 'Clear skies: no storm in this environment';
     else if (!RES?.vol) { tag.textContent = 'Building the storm…'; return; }
-    else {
+    else if (st.mode === 'instant') {
       const az = cam.az * Math.PI / 180;
       tag.textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} from ${Math.round(cam.dist)} km · ${cam.h < 1 ? 'ground level' : Math.round(cam.h) + ' km up'} · drag to orbit, scroll to zoom`;
     }
@@ -235,7 +270,7 @@ export function mountStorm(root: HTMLElement): () => void {
   }
 
   async function captureImage(W: number, H: number): Promise<ImageData | null> {
-    return renderer && RES?.vol ? renderer.capture(cam, W, H) : null;
+    return renderer && (RES?.vol || panel.driver) ? renderer.capture(cam, W, H) : null;
   }
   on($('svSave'), 'click', async () => {
     const img = await captureImage(1920, 1200);
@@ -246,21 +281,29 @@ export function mountStorm(root: HTMLElement): () => void {
     a.download = `supercell-${(S?.precip ?? 'storm')}-${Date.now()}.png`; a.href = c.toDataURL('image/png'); a.click();
   });
   // hook for automated tests: render a frame offscreen
-  (window as unknown as { __stormlab?: unknown }).__stormlab = { captureImage, kind: () => renderer?.kind };
+  (window as unknown as { __stormlab?: unknown }).__stormlab = {
+    captureImage, kind: () => renderer?.kind,
+    sim: () => ({ t: panel.driver?.t ?? 0, kind: panel.driver?.kind, series: panel.series, events: panel.tracker?.events ?? [] })
+  };
   cleanup.push(() => { delete (window as unknown as { __stormlab?: unknown }).__stormlab; });
 
   /* ---------- loop ---------- */
-  function loop() {
+  let lastFrame = performance.now();
+  function loop(now: number) {
     if (!alive) return;
-    $('svTagR').textContent = busy ? 'Computing…' : (S && S.forms && E ? `CAPE ${Math.round(E.pc.cape).toLocaleString()} · 0–6 km shear ${kt(E.shear6)} kt · STP ${E.stp.toFixed(1)}` : '');
+    const wallDt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000)); lastFrame = now;
+    if (st.mode === 'sim') panel.tick(wallDt);
+    $('svTagR').textContent = busy && st.mode === 'instant' ? 'Computing…' : (S && S.forms && E ? `CAPE ${Math.round(E.pc.cape).toLocaleString()} · 0–6 km shear ${kt(E.shear6)} kt · STP ${E.stp.toFixed(1)}` : '');
     if (st.view === '3d' && need3D) { draw3D(); need3D = false; }
     if (st.view === 'radar' && needRadar) {
-      $('svTagL').textContent = drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, st);
+      $('svTagL').textContent = st.mode === 'sim'
+        ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [])
+        : drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, st);
       needRadar = false;
     }
     requestAnimationFrame(loop);
   }
-  const redraw = () => { if (E && S) { drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E); drawEF($<HTMLCanvasElement>('tEF'), S); } };
+  const redraw = () => { if (E && S) { drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E); drawEF($<HTMLCanvasElement>('tEF'), S); } panel.redrawCharts(); };
   const ro = new ResizeObserver(() => { need3D = needRadar = true; redraw(); });
   ro.observe(root); cleanup.push(() => ro.disconnect());
   cleanup.push(onThemeChange(redraw));
@@ -272,6 +315,7 @@ export function mountStorm(root: HTMLElement): () => void {
   all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === st.prod ? 'true' : 'false'));
   setView(st.view);
   diagnose();
+  setMode(st.mode);
   if (app.link && SLIDERS.every(s => app.link!.env[s.k] === o[s.k])) tor = app.link.params;
   requestAnimationFrame(loop);
 

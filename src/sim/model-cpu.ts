@@ -1,0 +1,340 @@
+/**
+ * CPU reference implementation of the cloud model. The WebGPU kernels mirror this code step for step; tests run
+ * both and compare. Physics:
+ *   - anelastic equations on a C grid, storm-following frame
+ *   - semi-Lagrangian advection with MacCormack correction and a min/max limiter
+ *   - buoyancy from potential temperature, water vapour and condensate loading
+ *   - Kessler (1969) warm-rain microphysics after Klemp & Wilhelmson (1978): saturation adjustment, autoconversion,
+ *     accretion, rain evaporation and rain sedimentation
+ *   - constant eddy diffusion, lateral sponge, Rayleigh damping aloft
+ *   - pressure projection enforcing div(rho0 u) = 0, solved by red-black vertical-line relaxation
+ */
+import { type BaseState } from './base';
+import { layouts, nC, nU, nV, nW, type GridSpec, type Layout } from './grid';
+import { C, DEFAULT_PARAMS, type Bubble, type Nudge, type SimParams } from './params';
+
+export interface SimFields {
+  u: Float32Array; v: Float32Array; w: Float32Array;
+  th: Float32Array; qv: Float32Array; qc: Float32Array; qr: Float32Array;
+  /** pressure variable p'/rho0 (m^2/s^2) */
+  phi: Float32Array;
+  /** accumulated surface rain, mm */
+  rain: Float32Array;
+}
+
+export const qsatT = (T: number, p: number): number => {
+  const es = 610.78 * Math.exp(17.27 * (T - 273.16) / (T - 35.86));
+  return C.eps * es / Math.max(p - es, 1);
+};
+
+export class SimCPU {
+  readonly g: GridSpec;
+  readonly b: BaseState;
+  readonly p: SimParams;
+  f: SimFields;
+  t = 0;
+  nudgeCfg: Nudge | null = null;
+  private L: ReturnType<typeof layouts>;
+  private tmpA: Float32Array; private tmpB: Float32Array;
+  private div: Float32Array;
+
+  constructor(g: GridSpec, base: BaseState, params: Partial<SimParams> = {}) {
+    this.g = g; this.b = base; this.p = { ...DEFAULT_PARAMS, ...params };
+    this.L = layouts(g);
+    const N = nC(g);
+    this.f = {
+      u: new Float32Array(nU(g)), v: new Float32Array(nV(g)), w: new Float32Array(nW(g)),
+      th: new Float32Array(N), qv: new Float32Array(N), qc: new Float32Array(N), qr: new Float32Array(N),
+      phi: new Float32Array(N), rain: new Float32Array(g.NX * g.NY)
+    };
+    const big = Math.max(nU(g), nV(g), nW(g));
+    this.tmpA = new Float32Array(big); this.tmpB = new Float32Array(big);
+    this.div = new Float32Array(N);
+    this.reset();
+  }
+
+  /** Fill every field with the base state. */
+  reset(): void {
+    const { g, b, f } = this;
+    for (let k = 0; k < g.NZ; k++) for (let j = 0; j < g.NY; j++) {
+      for (let i = 0; i <= g.NX; i++) f.u[(k * g.NY + j) * (g.NX + 1) + i] = b.u0[k];
+      for (let i = 0; i < g.NX; i++) {
+        const c = (k * g.NY + j) * g.NX + i;
+        f.th[c] = b.th0[k]; f.qv[c] = b.qv0[k]; f.qc[c] = 0; f.qr[c] = 0; f.phi[c] = 0;
+      }
+    }
+    for (let k = 0; k < g.NZ; k++) for (let j = 0; j <= g.NY; j++) for (let i = 0; i < g.NX; i++) f.v[(k * (g.NY + 1) + j) * g.NX + i] = b.v0[k];
+    f.w.fill(0); f.rain.fill(0);
+    this.t = 0;
+  }
+
+  /** Warm bubble (cosine-squared), keeping the relative humidity of the environment. */
+  addBubble(bb: Bubble): void {
+    const { g, b, f } = this;
+    for (let k = 0; k < g.NZ; k++) for (let j = 0; j < g.NY; j++) for (let i = 0; i < g.NX; i++) {
+      const x = (i + 0.5) * g.dx, y = (j + 0.5) * g.dy, z = (k + 0.5) * g.dz;
+      const r = Math.hypot((x - bb.x) / bb.rh, (y - bb.y) / bb.rh, (z - bb.z) / bb.rz);
+      if (r >= 1) continue;
+      const c = (k * g.NY + j) * g.NX + i, d = bb.dth * Math.cos(Math.PI / 2 * r) ** 2;
+      const T0 = b.th0[k] * b.pi0[k], rh = b.qv0[k] / qsatT(T0, b.p0[k]);
+      f.th[c] = b.th0[k] + d;
+      const qs = qsatT((b.th0[k] + d) * b.pi0[k], b.p0[k]);
+      f.qv[c] = bb.moist ? Math.max(b.qv0[k], b.qv0[k] + (Math.min(b.qv0[0], qs) - b.qv0[k]) * Math.cos(Math.PI / 2 * r) ** 2) : rh * qs;
+    }
+  }
+
+  /* ---------- sampling helpers ---------- */
+  private sample(a: Float32Array, L: Layout, x: number, y: number, z: number): number {
+    const g = this.g;
+    let fx = x / g.dx - L.ox, fy = y / g.dy - L.oy, fz = z / g.dz - L.oz;
+    fx = Math.min(Math.max(fx, 0), L.nx - 1.0001); fy = Math.min(Math.max(fy, 0), L.ny - 1.0001); fz = Math.min(Math.max(fz, 0), L.nz - 1.0001);
+    const i = Math.floor(fx), j = Math.floor(fy), k = Math.floor(fz), tx = fx - i, ty = fy - j, tz = fz - k;
+    const sx = 1, sy = L.nx, sz = L.nx * L.ny, o = k * sz + j * sy + i;
+    const c00 = a[o] + (a[o + sx] - a[o]) * tx, c10 = a[o + sy] + (a[o + sy + sx] - a[o + sy]) * tx;
+    const c01 = a[o + sz] + (a[o + sz + sx] - a[o + sz]) * tx, c11 = a[o + sz + sy] + (a[o + sz + sy + sx] - a[o + sz + sy]) * tx;
+    const c0 = c00 + (c10 - c00) * ty, c1 = c01 + (c11 - c01) * ty;
+    return c0 + (c1 - c0) * tz;
+  }
+  /** min and max of the 8 grid values around a point (for the MacCormack limiter) */
+  private bounds(a: Float32Array, L: Layout, x: number, y: number, z: number, out: number[]): void {
+    const g = this.g;
+    let fx = x / g.dx - L.ox, fy = y / g.dy - L.oy, fz = z / g.dz - L.oz;
+    fx = Math.min(Math.max(fx, 0), L.nx - 1.0001); fy = Math.min(Math.max(fy, 0), L.ny - 1.0001); fz = Math.min(Math.max(fz, 0), L.nz - 1.0001);
+    const i = Math.floor(fx), j = Math.floor(fy), k = Math.floor(fz), sy = L.nx, sz = L.nx * L.ny, o = k * sz + j * sy + i;
+    let mn = a[o], mx = a[o];
+    for (const d of [1, sy, sy + 1, sz, sz + 1, sz + sy, sz + sy + 1]) { const v = a[o + d]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    out[0] = mn; out[1] = mx;
+  }
+  private vel(x: number, y: number, z: number, o: number[]): void {
+    const { L, f } = this;
+    o[0] = this.sample(f.u, L.u, x, y, z); o[1] = this.sample(f.v, L.v, x, y, z); o[2] = this.sample(f.w, L.w, x, y, z);
+  }
+  /** departure point of a parcel arriving at (x,y,z) after time s (negative s traces forward), RK2 */
+  private depart(x: number, y: number, z: number, s: number, o: number[]): void {
+    const v = [0, 0, 0];
+    this.vel(x, y, z, v);
+    const xm = x - 0.5 * s * v[0], ym = y - 0.5 * s * v[1], zm = z - 0.5 * s * v[2];
+    this.vel(xm, ym, zm, v);
+    o[0] = x - s * v[0]; o[1] = y - s * v[1]; o[2] = Math.min(Math.max(z - s * v[2], 0), this.g.NZ * this.g.dz);
+  }
+
+  /* ---------- advection ---------- */
+  /** MacCormack semi-Lagrangian advection of one field (in place, using the velocity at the start of the step). */
+  private advect(a: Float32Array, L: Layout): void {
+    const g = this.g, dt = this.p.dt, fwd = this.tmpA, out = this.tmpB, n = L.nx * L.ny * L.nz;
+    const d = [0, 0, 0], bnd = [0, 0];
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const x = (i + L.ox) * g.dx, y = (j + L.oy) * g.dy, z = (k + L.oz) * g.dz;
+      this.depart(x, y, z, dt, d);
+      fwd[(k * L.ny + j) * L.nx + i] = this.sample(a, L, d[0], d[1], d[2]);
+    }
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const c = (k * L.ny + j) * L.nx + i, x = (i + L.ox) * g.dx, y = (j + L.oy) * g.dy, z = (k + L.oz) * g.dz;
+      this.depart(x, y, z, -dt, d);
+      const back = this.sample(fwd, L, d[0], d[1], d[2]);
+      let v = fwd[c] + 0.5 * (a[c] - back);
+      this.depart(x, y, z, dt, d);
+      this.bounds(a, L, d[0], d[1], d[2], bnd);
+      v = Math.min(Math.max(v, bnd[0]), bnd[1]);
+      out[c] = v;
+    }
+    a.set(out.subarray(0, n));
+  }
+
+  /* ---------- microphysics ---------- */
+  private microphysics(): void {
+    const { g, b, f, p } = this, dt = p.dt, N = nC(g);
+    for (let c = 0; c < N; c++) {
+      const k = Math.floor(c / (g.NX * g.NY)), pi = b.pi0[k], pr = b.p0[k], rho = b.rho0[k];
+      let th = f.th[c], qv = f.qv[c], qc = Math.max(f.qc[c], 0), qr = Math.max(f.qr[c], 0);
+      // autoconversion and accretion
+      const ar = p.k1 * Math.max(qc - p.qcCrit, 0), cr = qr > 0 ? p.k2 * qc * Math.pow(qr, 0.875) : 0;
+      const dqr = Math.min(qc, dt * (ar + cr));
+      qc -= dqr; qr += dqr;
+      // saturation adjustment (two Newton passes)
+      for (let it = 0; it < 2; it++) {
+        const T = th * pi, qs = qsatT(T, pr);
+        let dq = (qv - qs) / (1 + C.Lv * C.Lv * qs / (C.cp * C.Rv * T * T));
+        if (dq < 0) dq = Math.max(dq, -qc);
+        qv -= dq; qc += dq; th += C.Lv / (C.cp * pi) * dq;
+      }
+      // rain evaporation in subsaturated air
+      if (qr > 0) {
+        const T = th * pi, qs = qsatT(T, pr);
+        if (qv < qs) {
+          const r = 0.001 * rho, rq = r * qr;
+          const er = (1.6 + 124.9 * Math.pow(rq, 0.2046)) * Math.pow(rq, 0.525) / (2.55e8 / (pr * qs) + 5.4e5) * ((qs - qv) / (r * qs));
+          const ern = Math.min(dt * er, qr, qs - qv);
+          qr -= ern; qv += ern; th -= C.Lv / (C.cp * pi) * ern;
+        }
+      }
+      f.th[c] = th; f.qv[c] = qv; f.qc[c] = qc; f.qr[c] = qr;
+    }
+    // rain sedimentation: upwind flux form, terminal speed after Klemp & Wilhelmson (1978)
+    const rhoS = b.rho0[0], plane = g.NX * g.NY, flux = this.tmpA;
+    for (let k = 0; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
+      const c = k * plane + c2, rho = b.rho0[k], qr = f.qr[c];
+      const vt = qr > 1e-9 ? 36.34 * Math.pow(0.001 * rho * qr, 0.1364) * Math.sqrt(rhoS / rho) : 0;
+      flux[c] = rho * qr * vt;               // downward mass flux, kg/m^2/s
+    }
+    for (let k = 0; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
+      const c = k * plane + c2, above = k < g.NZ - 1 ? flux[c + plane] : 0;
+      f.qr[c] = Math.max(0, f.qr[c] + dt * (above - flux[c]) / (b.rho0[k] * g.dz));
+      if (k === 0) f.rain[c2] += flux[c] * dt;     // kg/m^2 = mm
+    }
+  }
+
+  /* ---------- forcing: buoyancy, diffusion, sponges ---------- */
+  private forcing(): void {
+    const { g, b, f, p } = this, dt = p.dt, plane = g.NX * g.NY;
+    // buoyancy on interior w levels
+    for (let k = 1; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
+      const lo = (k - 1) * plane + c2, hi = k * plane + c2;
+      const B = (cc: number, kk: number) => C.g * ((f.th[cc] - b.th0[kk]) / b.th0[kk] + 0.608 * (f.qv[cc] - b.qv0[kk]) - f.qc[cc] - f.qr[cc]);
+      f.w[k * plane + c2] += dt * 0.5 * (B(lo, k - 1) + B(hi, k));
+    }
+    // diffusion of perturbations from the base state (explicit, conservative enough at these K)
+    this.diffuse(f.u, this.L.u, b.u0);
+    this.diffuse(f.v, this.L.v, b.v0);
+    this.diffuse(f.w, this.L.w, null);
+    this.diffuse(f.th, this.L.c, b.th0);
+    this.diffuse(f.qv, this.L.c, b.qv0);
+    this.diffuse(f.qc, this.L.c, null);
+    this.diffuse(f.qr, this.L.c, null);
+    // lateral sponge and Rayleigh damping aloft, relaxing toward the base state
+    this.relax(f.u, this.L.u, b.u0); this.relax(f.v, this.L.v, b.v0); this.relax(f.w, this.L.w, null);
+    this.relax(f.th, this.L.c, b.th0); this.relax(f.qv, this.L.c, b.qv0); this.relax(f.qc, this.L.c, null); this.relax(f.qr, this.L.c, null);
+    // w = 0 at the ground and the lid
+    for (let c2 = 0; c2 < plane; c2++) { f.w[c2] = 0; f.w[g.NZ * plane + c2] = 0; }
+  }
+  /**
+   * Vertical eddy diffusion of the perturbation from the base state, plus a 4th-order horizontal filter
+   * (-nu/64 * L(L(a)), L the 5-point Laplacian in grid units), which removes 2-gridpoint noise and leaves the
+   * storm-scale flow nearly untouched.
+   */
+  private diffuse(a: Float32Array, L: Layout, base: Float32Array | null): void {
+    const g = this.g, K = this.p.kdiff * this.p.dt, out = this.tmpA, lap = this.tmpB, n = L.nx * L.ny * L.nz;
+    const az = K / (g.dz * g.dz), sy = L.nx, sz = L.nx * L.ny, nu = this.p.hyper / 64;
+    const bk = (k: number) => base ? base[Math.min(k, base.length - 1)] : 0;
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const c = (k * L.ny + j) * L.nx + i, v = a[c];
+      const xm = i > 0 ? a[c - 1] : v, xp = i < L.nx - 1 ? a[c + 1] : v, ym = j > 0 ? a[c - sy] : v, yp = j < L.ny - 1 ? a[c + sy] : v;
+      lap[c] = xm + xp + ym + yp - 4 * v;
+    }
+    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
+      const c = (k * L.ny + j) * L.nx + i, v = a[c], l = lap[c];
+      const xm = i > 0 ? lap[c - 1] : l, xp = i < L.nx - 1 ? lap[c + 1] : l, ym = j > 0 ? lap[c - sy] : l, yp = j < L.ny - 1 ? lap[c + sy] : l;
+      const p0 = v - bk(k), zm = k > 0 ? a[c - sz] - bk(k - 1) : p0, zp = k < L.nz - 1 ? a[c + sz] - bk(k + 1) : p0;
+      out[c] = v - nu * (xm + xp + ym + yp - 4 * l) + az * (zm + zp - 2 * p0);
+    }
+    a.set(out.subarray(0, n));
+  }
+  private relax(a: Float32Array, L: Layout, base: Float32Array | null): void {
+    const g = this.g, p = this.p, dt = p.dt, ns = p.spongeCells, ztop = g.NZ * g.dz;
+    for (let k = 0; k < L.nz; k++) {
+      const z = (k + L.oz) * g.dz;
+      const rz = z > p.dampZ ? Math.sin(Math.PI / 2 * (z - p.dampZ) / (ztop - p.dampZ)) ** 2 / p.dampTau : 0;
+      const target = base ? base[Math.min(k, base.length - 1)] : 0;
+      for (let j = 0; j < L.ny; j++) {
+        const yj = j + L.oy, dy = Math.min(yj, g.NY - yj);          // distance to the nearest edge, in cells
+        for (let i = 0; i < L.nx; i++) {
+          const xi = i + L.ox, dx = Math.min(xi, g.NX - xi), d = Math.min(dx, dy);
+          const rs = d < ns ? (1 - d / ns) ** 2 / p.spongeTau : 0, r = Math.min(1, (rs + rz) * dt);
+          if (r > 0) { const c = (k * L.ny + j) * L.nx + i; a[c] += (target - a[c]) * r; }
+        }
+      }
+    }
+  }
+
+  /* ---------- pressure projection ---------- */
+  private project(): void {
+    const { g, b, f, p } = this, dt = p.dt, NX = g.NX, NY = g.NY, NZ = g.NZ, plane = NX * NY;
+    const idx2 = 1 / (g.dx * g.dx), idy2 = 1 / (g.dy * g.dy), idz2 = 1 / (g.dz * g.dz);
+    // right-hand side: div(rho0 u*) / dt
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const c = k * plane + j * NX + i, r = b.rho0[k];
+      const du = f.u[(k * NY + j) * (NX + 1) + i + 1] - f.u[(k * NY + j) * (NX + 1) + i];
+      const dv = f.v[(k * (NY + 1) + j + 1) * NX + i] - f.v[(k * (NY + 1) + j) * NX + i];
+      const dw = b.rhoW[k + 1] * f.w[(k + 1) * plane + j * NX + i] - b.rhoW[k] * f.w[k * plane + j * NX + i];
+      this.div[c] = (r * (du / g.dx + dv / g.dy) + dw / g.dz) / dt;
+    }
+    // red-black vertical-line relaxation (each column solved exactly with Thomas' algorithm)
+    const aa = new Float64Array(NZ), bb = new Float64Array(NZ), cc = new Float64Array(NZ), rr = new Float64Array(NZ), sol = new Float64Array(NZ);
+    const phi = f.phi;
+    for (let it = 0; it < p.pIters; it++) for (let color = 0; color < 2; color++) {
+      for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+        if (((i + j) & 1) !== color) continue;
+        for (let k = 0; k < NZ; k++) {
+          const c = k * plane + j * NX + i, r = b.rho0[k];
+          const nb = (i > 0 ? phi[c - 1] : 0) + (i < NX - 1 ? phi[c + 1] : 0);
+          const nbY = (j > 0 ? phi[c - NX] : 0) + (j < NY - 1 ? phi[c + NX] : 0);
+          aa[k] = k > 0 ? b.rhoW[k] * idz2 : 0;
+          cc[k] = k < NZ - 1 ? b.rhoW[k + 1] * idz2 : 0;
+          bb[k] = -(aa[k] + cc[k]) - 2 * r * (idx2 + idy2);
+          rr[k] = this.div[c] - r * idx2 * nb - r * idy2 * nbY;
+        }
+        // Thomas algorithm
+        for (let k = 1; k < NZ; k++) { const m = aa[k] / bb[k - 1]; bb[k] -= m * cc[k - 1]; rr[k] -= m * rr[k - 1]; }
+        sol[NZ - 1] = rr[NZ - 1] / bb[NZ - 1];
+        for (let k = NZ - 2; k >= 0; k--) sol[k] = (rr[k] - cc[k] * sol[k + 1]) / bb[k];
+        for (let k = 0; k < NZ; k++) { const c = k * plane + j * NX + i; phi[c] += p.omega * (sol[k] - phi[c]); }
+      }
+    }
+    // subtract the pressure gradient
+    for (let k = 0; k < NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i <= NX; i++) {
+      const pl = i > 0 ? phi[k * plane + j * NX + i - 1] : 0, pr = i < NX ? phi[k * plane + j * NX + i] : 0;
+      f.u[(k * NY + j) * (NX + 1) + i] -= dt * (pr - pl) / g.dx;
+    }
+    for (let k = 0; k < NZ; k++) for (let j = 0; j <= NY; j++) for (let i = 0; i < NX; i++) {
+      const ps = j > 0 ? phi[k * plane + (j - 1) * NX + i] : 0, pn = j < NY ? phi[k * plane + j * NX + i] : 0;
+      f.v[(k * (NY + 1) + j) * NX + i] -= dt * (pn - ps) / g.dy;
+    }
+    for (let k = 1; k < NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
+      f.w[k * plane + c2] -= dt * (phi[k * plane + c2] - phi[(k - 1) * plane + c2]) / g.dz;
+    }
+  }
+
+  /** Residual divergence max |div(rho0 u)| / rho0 (1/s), for tests. */
+  maxDivergence(): number {
+    const { g, b, f } = this, NX = g.NX, NY = g.NY, plane = NX * NY;
+    let m = 0;
+    for (let k = 0; k < g.NZ; k++) for (let j = 0; j < NY; j++) for (let i = 0; i < NX; i++) {
+      const du = f.u[(k * NY + j) * (NX + 1) + i + 1] - f.u[(k * NY + j) * (NX + 1) + i];
+      const dv = f.v[(k * (NY + 1) + j + 1) * NX + i] - f.v[(k * (NY + 1) + j) * NX + i];
+      const dw = b.rhoW[k + 1] * f.w[(k + 1) * plane + j * NX + i] - b.rhoW[k] * f.w[k * plane + j * NX + i];
+      m = Math.max(m, Math.abs((b.rho0[k] * (du / g.dx + dv / g.dy) + dw / g.dz) / b.rho0[k]));
+    }
+    return m;
+  }
+
+  /** Updraft nudging on w levels while t < tEnd. */
+  private nudge(): void {
+    const n = this.nudgeCfg, g = this.g, f = this.f;
+    if (!n || this.t >= n.tEnd) return;
+    const a = Math.min(1, this.p.dt / n.tau), plane = g.NX * g.NY;
+    for (let k = 1; k < g.NZ; k++) for (let j = 0; j < g.NY; j++) for (let i = 0; i < g.NX; i++) {
+      const x = (i + 0.5) * g.dx, y = (j + 0.5) * g.dy, z = k * g.dz;
+      const r = Math.hypot((x - n.x) / n.rh, (y - n.y) / n.rh, (z - n.z) / n.rz);
+      if (r >= 1) continue;
+      const sh = Math.cos(Math.PI / 2 * r) ** 2, c = k * plane + j * g.NX + i;
+      f.w[c] += a * sh * (n.wmax * sh - f.w[c]);
+    }
+  }
+
+  /** Advance one time step. */
+  step(): void {
+    const { f, L } = this;
+    // advect with the velocity at the start of the step: momentum first into copies, then scalars
+    const adv = (a: Float32Array, lay: Layout) => this.advect(a, lay);
+    adv(f.th, L.c); adv(f.qv, L.c); adv(f.qc, L.c); adv(f.qr, L.c);
+    // momentum: advect copies so every component is carried by the same (old) velocity
+    const un = f.u.slice(), vn = f.v.slice(), wn = f.w.slice();
+    adv(un, L.u); adv(vn, L.v); adv(wn, L.w);
+    f.u.set(un); f.v.set(vn); f.w.set(wn);
+    this.microphysics();
+    this.forcing();
+    this.nudge();
+    this.project();
+    this.t += this.p.dt;
+  }
+}

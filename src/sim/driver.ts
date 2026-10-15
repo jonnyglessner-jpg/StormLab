@@ -1,0 +1,164 @@
+/**
+ * Runs the cloud model for the UI: WebGPU when available (1 km grid), otherwise the CPU reference in a worker
+ * (2 km grid). Paces the model against the wall clock, keeps the renderer's volume current, and publishes
+ * diagnostics.
+ */
+import { type VolumeData } from '../physics/compute';
+import { type Environment } from '../physics/environment';
+import { type ChaserRenderer } from '../render/chaser';
+import { getGPU } from '../render/gpu-device';
+import { baseFromEnvironment, type BaseState } from './base';
+import { COARSE_GRID, DEFAULT_GRID, type GridSpec } from './grid';
+import { SimCPU } from './model-cpu';
+import { SimGPU } from './model-gpu';
+import { type Nudge } from './params';
+import type { SimWorkerIn, SimWorkerOut } from './sim.worker';
+
+export const RUN_LENGTH = 7200;   // s of model time
+
+export interface DiagFrame { t: number; g: GridSpec; diag: Float32Array }
+
+export interface SimDriver {
+  readonly kind: 'gpu' | 'cpu';
+  readonly g: GridSpec;
+  readonly base: BaseState;
+  /** model time, s */
+  readonly t: number;
+  running: boolean;
+  /** model seconds per wall-clock second; Infinity runs as fast as the hardware allows */
+  speed: number;
+  /** advance by the wall-clock interval since the last call */
+  tick(wallDt: number): void;
+  onDiag: ((f: DiagFrame) => void) | null;
+  /** cloud volume updated since the renderer last drew */
+  volumeDirty: boolean;
+  /** point the renderer at this simulation's volume again */
+  attach(): void;
+  destroy(): void;
+}
+
+/** Updraft nudging at 45% of the domain width, like CM1's iinit = 12 (Naylor & Gilmore 2012). */
+export function defaultNudge(g: GridSpec): Nudge {
+  return { x: g.NX * g.dx * 0.45, y: g.NY * g.dy * 0.5, z: 1500, rh: 10000, rz: 1500, wmax: 10, tau: 6, tEnd: 900 };
+}
+
+export async function createDriver(E: Environment, renderer: ChaserRenderer | null): Promise<SimDriver> {
+  if (renderer?.kind === 'webgpu' && renderer.device && renderer.attachTexture) {
+    const gpu = await getGPU();
+    if (gpu) return GpuDriver.create(E, renderer);
+  }
+  return new CpuDriver(E, renderer);
+}
+
+class GpuDriver implements SimDriver {
+  readonly kind = 'gpu' as const;
+  running = false;
+  speed = 180;
+  onDiag: ((f: DiagFrame) => void) | null = null;
+  volumeDirty = false;
+  private carry = 0;
+  private inFlight = false;
+  private lastDiag = -1e9;
+  private maxBatch = 4;
+
+  private constructor(readonly sim: SimGPU, readonly g: GridSpec, readonly base: BaseState, private renderer: ChaserRenderer) {}
+
+  static async create(E: Environment, renderer: ChaserRenderer): Promise<GpuDriver> {
+    const g = DEFAULT_GRID, base = baseFromEnvironment(g, E);
+    const sim = await SimGPU.create(renderer.device!, g, base, { dt: 6 });
+    const init = new SimCPU(g, base, { dt: 6 });          // initial state is built on the CPU and uploaded
+    sim.upload(init.f);
+    sim.nudgeCfg = { ...defaultNudge(g), tau: 6 };
+    sim.pack();
+    const d = new GpuDriver(sim, g, base, renderer);
+    d.attach();
+    d.volumeDirty = true;
+    void d.publish();
+    return d;
+  }
+  get t() { return this.sim.t; }
+
+  tick(wallDt: number): void {
+    if (!this.running || this.inFlight || this.sim.t >= RUN_LENGTH) return;
+    const dt = this.sim.p.dt;
+    this.carry += isFinite(this.speed) ? this.speed * wallDt / dt : this.maxBatch;
+    let n = Math.min(Math.floor(this.carry), this.maxBatch, Math.ceil((RUN_LENGTH - this.sim.t) / dt));
+    if (n < 1) return;
+    this.carry -= n;
+    if (this.carry > this.maxBatch) this.carry = this.maxBatch;    // don't build up a backlog
+    this.inFlight = true;
+    const t0 = performance.now();
+    this.sim.step(n);
+    this.sim.pack();
+    this.renderer.relight!();
+    this.volumeDirty = true;
+    this.sim.device.queue.onSubmittedWorkDone().then(() => {
+      this.inFlight = false;
+      // keep a batch under about 25 ms of GPU time
+      const ms = performance.now() - t0, per = ms / n;
+      this.maxBatch = Math.max(1, Math.min(40, Math.floor(25 / Math.max(per, 0.2))));
+      if (this.sim.t - this.lastDiag >= 30) void this.publish();
+    });
+  }
+
+  attach(): void {
+    const g = this.g;
+    this.renderer.attachTexture!(this.sim.densTex!, g.NX, g.NZ, g.NX * g.dx / 2000, g.NZ * g.dz / 1000);
+  }
+
+  private async publish(): Promise<void> {
+    const d = await this.sim.readDiag();
+    if (!d) return;
+    this.lastDiag = this.sim.t;
+    this.onDiag?.({ t: this.sim.t, g: this.g, diag: d });
+  }
+
+  destroy(): void { this.running = false; this.sim.destroy(); }
+}
+
+/** CPU fallback: the reference model in a worker on the coarse grid; volumes are lit on the CPU for WebGL. */
+class CpuDriver implements SimDriver {
+  readonly kind = 'cpu' as const;
+  readonly g = COARSE_GRID;
+  readonly base: BaseState;
+  running = false;
+  speed = 180;
+  onDiag: ((f: DiagFrame) => void) | null = null;
+  volumeDirty = false;
+  private worker: Worker;
+  private tNow = 0;
+  private budget = 0;
+  private waiting = false;
+  private lastVol: VolumeData | null = null;
+
+  constructor(E: Environment, private renderer: ChaserRenderer | null) {
+    this.base = baseFromEnvironment(this.g, E);
+    this.worker = new Worker(new URL('./sim.worker.js', import.meta.url), { type: 'module' });
+    this.worker.onmessage = (e: MessageEvent<SimWorkerOut>) => {
+      const m = e.data;
+      this.waiting = false;
+      this.tNow = m.t;
+      if (m.vol) { this.lastVol = m.vol; if (this.renderer) { this.renderer.setVolume(m.vol); this.volumeDirty = true; } }
+      this.onDiag?.({ t: m.t, g: this.g, diag: m.diag });
+    };
+    const msg: SimWorkerIn = { type: 'init', env: E.o, nudge: defaultNudge(this.g) };
+    this.worker.postMessage(msg);
+  }
+  get t() { return this.tNow; }
+
+  tick(wallDt: number): void {
+    if (!this.running || this.tNow >= RUN_LENGTH) return;
+    this.budget += isFinite(this.speed) ? this.speed * wallDt : 120;
+    if (this.waiting || this.budget < 30) return;
+    // ask for up to two minutes of model time at once; the worker answers when done
+    const seconds = Math.min(this.budget, 120);
+    this.budget = Math.max(0, this.budget - seconds);
+    this.waiting = true;
+    const msg: SimWorkerIn = { type: 'run', seconds, volume: true };
+    this.worker.postMessage(msg);
+  }
+
+  attach(): void { if (this.lastVol && this.renderer) this.renderer.setVolume(this.lastVol); }
+
+  destroy(): void { this.running = false; this.worker.terminate(); }
+}

@@ -1,0 +1,215 @@
+/**
+ * WebGPU implementation of the cloud model. Same algorithm and step order as SimCPU:
+ *   advect (A -> B) -> microphysics and sedimentation (B) -> buoyancy (B.w) -> diffusion + sponges (B -> A)
+ *   -> divergence -> red-black line relaxation -> pressure-gradient correction (A)
+ * A always holds the current state between steps.
+ */
+import { type BaseState } from './base';
+import { ADV1, ADV2, BUOY, DIAG, DIFFRELAX, DIV, GRAD, LAPH, LINE, MICRO, NUDGE, PACK, SEDAPPLY, SEDFLUX } from './gpu-kernels';
+import { nC, nU, nV, nW, type GridSpec } from './grid';
+import { type SimFields } from './model-cpu';
+import { DEFAULT_PARAMS, type Nudge, type SimParams } from './params';
+
+type FieldName = 'u' | 'v' | 'w' | 'th' | 'qv' | 'qc' | 'qr';
+const FIELDS: FieldName[] = ['th', 'qv', 'qc', 'qr', 'u', 'v', 'w'];
+const BS = 65;
+/** values per column in the diagnostics buffer (see DIAG in gpu-kernels.ts) */
+export const ND = 10;
+
+export class SimGPU {
+  readonly device: GPUDevice;
+  readonly g: GridSpec;
+  readonly p: SimParams;
+  readonly b: BaseState;
+  t = 0;
+  steps = 0;
+  A: Record<FieldName, GPUBuffer>;
+  B: Record<FieldName, GPUBuffer>;
+  phi: GPUBuffer; div: GPUBuffer; flux: GPUBuffer; tmp: GPUBuffer; rain: GPUBuffer; base: GPUBuffer;
+  private uP: GPUBuffer;
+  private uN: GPUBuffer;
+  nudgeCfg: Nudge | null = null;
+  private passes: { pipe: GPUComputePipeline; bind: GPUBindGroup; wg: [number, number, number] }[] = [];
+  /** cloud/rain density for the renderer (rgba8unorm, NX x NY x NZ) */
+  densTex: GPUTexture | null = null;
+  diag: GPUBuffer | null = null;
+  private packPass: { pipe: GPUComputePipeline; bind: GPUBindGroup } | null = null;
+  private diagPass: { pipe: GPUComputePipeline; bind: GPUBindGroup } | null = null;
+  private diagStage: GPUBuffer | null = null;
+  private diagBusy = false;
+
+  static async create(device: GPUDevice, g: GridSpec, base: BaseState, params: Partial<SimParams> = {}): Promise<SimGPU> {
+    if (g.NZ > 64) throw new Error('NZ must be at most 64');
+    const s = new SimGPU(device, g, base, params);
+    await s.build();
+    return s;
+  }
+
+  private constructor(device: GPUDevice, g: GridSpec, base: BaseState, params: Partial<SimParams>) {
+    this.device = device; this.g = g; this.b = base; this.p = { ...DEFAULT_PARAMS, ...params };
+    const S = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
+    const buf = (n: number, label: string) => device.createBuffer({ size: Math.max(16, n * 4), usage: S, label });
+    const sizes: Record<FieldName, number> = { u: nU(g), v: nV(g), w: nW(g), th: nC(g), qv: nC(g), qc: nC(g), qr: nC(g) };
+    const mk = (tag: string) => Object.fromEntries(FIELDS.map(f => [f, buf(sizes[f], `${tag}.${f}`)])) as Record<FieldName, GPUBuffer>;
+    this.A = mk('A'); this.B = mk('B');
+    this.phi = buf(nC(g), 'phi'); this.div = buf(nC(g), 'div'); this.flux = buf(nC(g), 'flux');
+    this.tmp = buf(Math.max(nU(g), nV(g), nW(g)), 'tmp'); this.rain = buf(g.NX * g.NY, 'rain');
+    this.base = buf(8 * BS, 'base');
+    const bd = new Float32Array(8 * BS);
+    const put = (f: number, a: Float32Array) => { for (let k = 0; k < a.length; k++) bd[f * BS + k] = a[k]; };
+    put(0, base.th0); put(1, base.qv0); put(2, base.pi0); put(3, base.rho0); put(4, base.p0); put(5, base.u0); put(6, base.v0); put(7, base.rhoW);
+    device.queue.writeBuffer(this.base, 0, bd);
+    this.uP = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.uN = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.writeParams();
+  }
+
+  writeParams(): void {
+    const { g, p } = this, ab = new ArrayBuffer(80), u = new Uint32Array(ab), f = new Float32Array(ab);
+    u[0] = g.NX; u[1] = g.NY; u[2] = g.NZ;
+    f.set([g.dx, g.dy, g.dz, p.dt], 4);
+    f.set([p.kdiff, p.k1, p.qcCrit, p.k2], 8);
+    f.set([p.spongeCells, p.spongeTau, p.dampZ, p.dampTau], 12);
+    f.set([p.omega, this.b.rho0[0], p.hyper, 0], 16);
+    this.device.queue.writeBuffer(this.uP, 0, ab);
+  }
+
+  private uniform(words: number[], floats: number[]): GPUBuffer {
+    const ab = new ArrayBuffer(32), u = new Uint32Array(ab), f = new Float32Array(ab);
+    words.forEach((v, i) => u[i] = v); floats.forEach((v, i) => f[4 + i] = v);
+    const b = this.device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.device.queue.writeBuffer(b, 0, ab);
+    return b;
+  }
+
+  private async build(): Promise<void> {
+    const d = this.device, g = this.g;
+    const mod = async (code: string, label: string) => {
+      const m = d.createShaderModule({ code, label });
+      const info = await m.getCompilationInfo();
+      const errs = info.messages.filter(x => x.type === 'error');
+      if (errs.length) throw new Error(`${label}: ${errs.map(e => `${e.lineNum}:${e.linePos} ${e.message}`).join('; ')}`);
+      return d.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'main' }, label });
+    };
+    const [pAdv1, pAdv2, pMicro, pSedF, pSedA, pBuoy, pDiff, pDiv, pLine, pGrad, pNudge, pLap] = await Promise.all([
+      mod(ADV1, 'adv1'), mod(ADV2, 'adv2'), mod(MICRO, 'micro'), mod(SEDFLUX, 'sedflux'), mod(SEDAPPLY, 'sedapply'),
+      mod(BUOY, 'buoy'), mod(DIFFRELAX, 'diffrelax'), mod(DIV, 'div'), mod(LINE, 'line'), mod(GRAD, 'grad'), mod(NUDGE, 'nudge'), mod(LAPH, 'laph')
+    ]);
+    const lay = (f: FieldName, baseIdx: number) => {
+      const n = f === 'u' ? [g.NX + 1, g.NY, g.NZ] : f === 'v' ? [g.NX, g.NY + 1, g.NZ] : f === 'w' ? [g.NX, g.NY, g.NZ + 1] : [g.NX, g.NY, g.NZ];
+      const o = f === 'u' ? [0, 0.5, 0.5] : f === 'v' ? [0.5, 0, 0.5] : f === 'w' ? [0.5, 0.5, 0] : [0.5, 0.5, 0.5];
+      return { buf: this.uniform([...n, baseIdx], [...o, f === 'w' ? 1 : 0]), n: n as [number, number, number] };
+    };
+    const baseOf: Record<FieldName, number> = { th: 1, qv: 2, qc: 0, qr: 0, u: 6, v: 7, w: 0 };
+    const wg = (n: [number, number, number], z = 4): [number, number, number] => [Math.ceil(n[0] / 8), Math.ceil(n[1] / 8), Math.ceil(n[2] / z)];
+    const bg = (pipe: GPUComputePipeline, res: GPUBindingResource[]) =>
+      d.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: res.map((r, i) => ({ binding: i, resource: r })) });
+    const B = (b: GPUBuffer): GPUBindingResource => ({ buffer: b });
+    const P = B(this.uP), cells: [number, number, number] = [g.NX, g.NY, g.NZ];
+    const add = (pipe: GPUComputePipeline, res: GPUBindingResource[], w: [number, number, number]) => this.passes.push({ pipe, bind: bg(pipe, res), wg: w });
+
+    // 1. advection A -> B
+    for (const f of FIELDS) {
+      const L = lay(f, 0);
+      add(pAdv1, [P, B(L.buf), B(this.A.u), B(this.A.v), B(this.A.w), B(this.A[f]), B(this.tmp)], wg(L.n));
+      add(pAdv2, [P, B(L.buf), B(this.A.u), B(this.A.v), B(this.A.w), B(this.A[f]), B(this.tmp), B(this.B[f])], wg(L.n));
+    }
+    // 2. microphysics and sedimentation on B
+    add(pMicro, [P, B(this.base), B(this.B.th), B(this.B.qv), B(this.B.qc), B(this.B.qr)], wg(cells));
+    add(pSedF, [P, B(this.base), B(this.B.qr), B(this.flux)], wg(cells));
+    add(pSedA, [P, B(this.base), B(this.B.qr), B(this.flux), B(this.rain)], wg(cells));
+    // 3. buoyancy on B.w
+    add(pBuoy, [P, B(this.base), B(this.B.w), B(this.B.th), B(this.B.qv), B(this.B.qc), B(this.B.qr)], wg([g.NX, g.NY, g.NZ - 1]));
+    // 4. diffusion + sponges B -> A
+    for (const f of FIELDS) {
+      const L = lay(f, baseOf[f]);
+      add(pLap, [P, B(L.buf), B(this.B[f]), B(this.tmp)], wg(L.n));
+      add(pDiff, [P, B(L.buf), B(this.base), B(this.B[f]), B(this.A[f]), B(this.tmp)], wg(L.n));
+    }
+    // 5. updraft nudging (switched on and off through its uniform), then projection
+    add(pNudge, [P, B(this.uN), B(this.A.w)], wg([g.NX, g.NY, g.NZ - 1]));
+    add(pDiv, [P, B(this.base), B(this.A.u), B(this.A.v), B(this.A.w), B(this.div)], wg(cells));
+    const col = [this.uniform([0], []), this.uniform([1], [])];
+    const line = [0, 1].map(c => bg(pLine, [P, B(col[c]), B(this.base), B(this.div), B(this.phi)]));
+    for (let it = 0; it < this.p.pIters; it++) for (const c of [0, 1]) this.passes.push({ pipe: pLine, bind: line[c], wg: [Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), 1] });
+    const comps: [FieldName, [number, number, number]][] = [['u', [g.NX + 1, g.NY, g.NZ]], ['v', [g.NX, g.NY + 1, g.NZ]], ['w', [g.NX, g.NY, g.NZ + 1]]];
+    comps.forEach(([f, n], ci) => add(pGrad, [P, B(this.uniform([ci], [])), B(this.phi), B(this.A[f])], wg(n)));
+
+    // outputs: density texture for the renderer and per-column diagnostics
+    const [pPack, pDiag] = await Promise.all([mod(PACK, 'pack'), mod(DIAG, 'diag')]);
+    this.densTex = d.createTexture({ size: [g.NX, g.NY, g.NZ], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING });
+    this.packPass = { pipe: pPack, bind: bg(pPack, [P, B(this.A.qc), B(this.A.qr), this.densTex.createView()]) };
+    this.diag = d.createBuffer({ size: g.NX * g.NY * ND * 4, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    this.diagStage = d.createBuffer({ size: g.NX * g.NY * ND * 4, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    this.diagPass = { pipe: pDiag, bind: bg(pDiag, [P, B(this.base), B(this.A.u), B(this.A.v), B(this.A.w), B(this.A.th), B(this.A.qr), B(this.diag), B(this.rain)]) };
+  }
+
+  /** Write cloud and rain into densTex. */
+  pack(): void {
+    if (!this.packPass) return;
+    const g = this.g, enc = this.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(this.packPass.pipe); pass.setBindGroup(0, this.packPass.bind);
+    pass.dispatchWorkgroups(Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), Math.ceil(g.NZ / 4)); pass.end();
+    this.device.queue.submit([enc.finish()]);
+  }
+
+  /** Compute and read back the per-column diagnostics. Returns null if a read is already in flight. */
+  async readDiag(): Promise<Float32Array | null> {
+    if (!this.diagPass || !this.diag || !this.diagStage || this.diagBusy) return null;
+    this.diagBusy = true;
+    const g = this.g, enc = this.device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(this.diagPass.pipe); pass.setBindGroup(0, this.diagPass.bind);
+    pass.dispatchWorkgroups(Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), 1); pass.end();
+    enc.copyBufferToBuffer(this.diag, 0, this.diagStage, 0, this.diag.size);
+    this.device.queue.submit([enc.finish()]);
+    try {
+      await this.diagStage.mapAsync(GPUMapMode.READ);
+      const out = new Float32Array(this.diagStage.getMappedRange().slice(0));
+      this.diagStage.unmap();
+      return out;
+    } finally { this.diagBusy = false; }
+  }
+
+  /** Encode n time steps into one command buffer and submit. Nudging is evaluated at the start of the batch. */
+  step(n = 1): void {
+    const nd = this.nudgeCfg, on = nd && this.t < nd.tEnd ? 1 : 0;
+    this.device.queue.writeBuffer(this.uN, 0, new Float32Array(nd ? [nd.x, nd.y, nd.z, on, nd.rh, nd.rz, nd.wmax, Math.min(1, this.p.dt / nd.tau)] : [0, 0, 0, 0, 1, 1, 0, 0]));
+    const enc = this.device.createCommandEncoder();
+    for (let s = 0; s < n; s++) {
+      const pass = enc.beginComputePass();
+      for (const q of this.passes) { pass.setPipeline(q.pipe); pass.setBindGroup(0, q.bind); pass.dispatchWorkgroups(...q.wg); }
+      pass.end();
+    }
+    this.device.queue.submit([enc.finish()]);
+    this.t += n * this.p.dt; this.steps += n;
+  }
+
+  /** Copy a full CPU state into the GPU (initial conditions). */
+  upload(f: SimFields): void {
+    const q = this.device.queue;
+    for (const k of FIELDS) q.writeBuffer(this.A[k], 0, f[k] as Float32Array<ArrayBuffer>);
+    q.writeBuffer(this.phi, 0, f.phi as Float32Array<ArrayBuffer>);
+    q.writeBuffer(this.rain, 0, f.rain as Float32Array<ArrayBuffer>);
+  }
+
+  /** Read buffers back (tests and diagnostics). */
+  async read(bufs: GPUBuffer[]): Promise<Float32Array[]> {
+    const d = this.device, enc = d.createCommandEncoder();
+    const stage = bufs.map(b => { const s = d.createBuffer({ size: b.size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }); enc.copyBufferToBuffer(b, 0, s, 0, b.size); return s; });
+    d.queue.submit([enc.finish()]);
+    const out: Float32Array[] = [];
+    for (const s of stage) { await s.mapAsync(GPUMapMode.READ); out.push(new Float32Array(s.getMappedRange().slice(0))); s.unmap(); s.destroy(); }
+    return out;
+  }
+
+  async download(): Promise<SimFields> {
+    const [u, v, w, th, qv, qc, qr, phi, rain] = await this.read([this.A.u, this.A.v, this.A.w, this.A.th, this.A.qv, this.A.qc, this.A.qr, this.phi, this.rain]);
+    return { u, v, w, th, qv, qc, qr, phi, rain };
+  }
+
+  destroy(): void {
+    for (const r of [this.A, this.B]) for (const k of FIELDS) r[k].destroy();
+    for (const b of [this.phi, this.div, this.flux, this.tmp, this.rain, this.base, this.uP, this.uN]) b.destroy();
+    this.densTex?.destroy(); this.diag?.destroy(); this.diagStage?.destroy();
+  }
+}

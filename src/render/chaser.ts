@@ -12,6 +12,8 @@ export interface Camera {
   h: number;
   /** height of the point it looks at, km */
   tz: number;
+  /** horizontal position it looks at, km from the volume's centre (default: the instant model's storm) */
+  tx?: number; ty?: number;
 }
 
 export interface ChaserRenderer {
@@ -26,6 +28,10 @@ export interface ChaserRenderer {
   /** render one frame offscreen and return its pixels (RGBA), for saving an image or for tests */
   capture(cam: Camera, width: number, height: number): Promise<ImageData | null>;
   destroy(): void;
+  /** WebGPU only: the shared device, and drawing straight from a simulation-owned density texture */
+  device?: GPUDevice;
+  attachTexture?(tex: GPUTexture, NV: number, NZ: number, Lkm: number, ZTkm: number): void;
+  relight?(): void;
 }
 
 export const SUN_EL = 22 * Math.PI / 180;
@@ -35,9 +41,9 @@ export const TARGET: [number, number] = [4, 2];
 
 /** Camera basis for a look-at toward the storm. */
 export function cameraBasis(cam: Camera) {
-  const az = cam.az * Math.PI / 180;
-  const cp = [TARGET[0] + cam.dist * Math.cos(az), TARGET[1] + cam.dist * Math.sin(az), cam.h];
-  let f = [TARGET[0] - cp[0], TARGET[1] - cp[1], cam.tz - cp[2]];
+  const az = cam.az * Math.PI / 180, tx = cam.tx ?? TARGET[0], ty = cam.ty ?? TARGET[1];
+  const cp = [tx + cam.dist * Math.cos(az), ty + cam.dist * Math.sin(az), cam.h];
+  let f = [tx - cp[0], ty - cp[1], cam.tz - cp[2]];
   const fl = Math.hypot(f[0], f[1], f[2]); f = f.map(v => v / fl);
   let r = [f[1], -f[0], 0];
   const rl = Math.hypot(r[0], r[1]) || 1; r = r.map(v => v / rl);

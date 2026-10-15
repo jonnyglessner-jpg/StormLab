@@ -7,6 +7,7 @@
 import { type VolumeData } from '../physics/compute';
 import { BMAX } from '../physics/volume';
 import { cameraBasis, SUN_DIR, type Camera, type ChaserRenderer } from './chaser';
+import { getGPU } from './gpu-device';
 import { cloudNoise } from './noise';
 
 const LIGHT_WGSL = /* wgsl */`
@@ -120,19 +121,10 @@ async function checkedModule(device: GPUDevice, code: string, label: string): Pr
   return m;
 }
 
-/**
- * Keep the adapter reachable for as long as its device is in use: in some Chrome builds, a garbage-collected adapter
- * takes its GPU instance with it and the device is lost ("A valid external Instance reference no longer exists").
- */
-const liveAdapters = new Set<GPUAdapter>();
-
 export async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<ChaserRenderer | null> {
-  const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-  if (!adapter) return null;
-  liveAdapters.add(adapter);
-  const device = await adapter.requestDevice();
-  device.lost.then(info => { if (info.reason !== 'destroyed') console.error('WebGPU device lost:', info.message); });
-  device.addEventListener('uncapturederror', (e) => console.error('WebGPU:', (e as GPUUncapturedErrorEvent).error.message));
+  const gpu = await getGPU();
+  if (!gpu) return null;
+  const device = gpu.device;
   const lightMod = await checkedModule(device, LIGHT_WGSL, 'lighting');
   const renderMod = await checkedModule(device, RENDER_WGSL, 'render');
   const ctx = canvas.getContext('webgpu') as GPUCanvasContext | null;
@@ -156,54 +148,67 @@ export async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<C
   const lightUBuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const renderUBuf = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
 
-  let densTex: GPUTexture | null = null, lightTex: GPUTexture | null = null, bind: GPUBindGroup | null = null;
-  let vol: VolumeData | null = null, frame = 0;
+  // the volume being drawn: either our own texture (instant model) or one owned by the simulation
+  let ownTex: GPUTexture | null = null, lightTex: GPUTexture | null = null;
+  let bind: GPUBindGroup | null = null, lbind: GPUBindGroup | null = null;
+  let geom: { NV: number; NZ: number; L: number; ZT: number } | null = null, frame = 0;
+
+  /** Point the renderer at a density texture (r channel, sqrt-encoded extinction) covering +/-L km and 0..ZT km. */
+  function bindDensity(tex: GPUTexture, NV: number, NZ: number, L: number, ZT: number): void {
+    if (!lightTex || !geom || geom.NV !== NV || geom.NZ !== NZ) {
+      lightTex?.destroy();
+      // lighting varies smoothly, so it lives on a half-resolution grid (8x fewer voxels to march from)
+      lightTex = device.createTexture({ size: [Math.max(1, NV >> 1), Math.max(1, NV >> 1), Math.max(1, NZ >> 1)], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
+    }
+    geom = { NV, NZ, L, ZT };
+    bind = device.createBindGroup({
+      layout: renderPipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: tex.createView() }, { binding: 1, resource: lightTex.createView() },
+        { binding: 2, resource: noiseTex.createView() }, { binding: 3, resource: samp }, { binding: 4, resource: sampRep },
+        { binding: 5, resource: { buffer: renderUBuf } }
+      ]
+    });
+    lbind = device.createBindGroup({
+      layout: lightPipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: tex.createView() }, { binding: 1, resource: samp },
+        { binding: 2, resource: lightTex.createView() }, { binding: 3, resource: { buffer: lightUBuf } }
+      ]
+    });
+    device.queue.writeBuffer(lightUBuf, 0, new Float32Array([SUN_DIR[0], SUN_DIR[1], SUN_DIR[2], 0, Math.max(1, NV >> 1), Math.max(1, NZ >> 1), L, ZT, BMAX, 0.8, 0, 0]));
+  }
+
+  /** Recompute sun and sky lighting from the current density texture. */
+  function relight(): void {
+    if (!lbind || !geom) return;
+    const enc = device.createCommandEncoder(), pass = enc.beginComputePass();
+    pass.setPipeline(lightPipe); pass.setBindGroup(0, lbind);
+    pass.dispatchWorkgroups(Math.ceil((geom.NV >> 1) / 4), Math.ceil((geom.NV >> 1) / 4), Math.ceil(Math.max(1, geom.NZ >> 1) / 4));
+    pass.end();
+    device.queue.submit([enc.finish()]);
+  }
 
   function setVolume(v: VolumeData): void {
     const { NV, NZv } = v;
-    if (!densTex || vol?.NV !== NV || vol?.NZv !== NZv) {
-      densTex?.destroy(); lightTex?.destroy();
-      densTex = device.createTexture({ size: [NV, NV, NZv], dimension: '3d', format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
-      // lighting varies smoothly, so it lives on a half-resolution grid (8x fewer voxels to march from)
-      lightTex = device.createTexture({ size: [NV >> 1, NV >> 1, NZv >> 1], dimension: '3d', format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
-      bind = device.createBindGroup({
-        layout: renderPipe.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: densTex.createView() }, { binding: 1, resource: lightTex.createView() },
-          { binding: 2, resource: noiseTex.createView() }, { binding: 3, resource: samp }, { binding: 4, resource: sampRep },
-          { binding: 5, resource: { buffer: renderUBuf } }
-        ]
-      });
+    if (!ownTex || ownTex.width !== NV || ownTex.depthOrArrayLayers !== NZv) {
+      ownTex?.destroy();
+      ownTex = device.createTexture({ size: [NV, NV, NZv], dimension: '3d', format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     }
-    vol = v;
     // density, sqrt-encoded so thin cloud keeps precision in 8 bits
     const n = NV * NV * NZv, d8 = new Uint8Array(n);
     for (let k = 0; k < n; k++) d8[k] = Math.round(255 * Math.sqrt(Math.min(1, Math.max(0, v.beta[k] / BMAX))));
-    device.queue.writeTexture({ texture: densTex }, d8, { bytesPerRow: NV, rowsPerImage: NV }, [NV, NV, NZv]);
-    // lighting on the GPU
-    const L = v.Rv / 1000, ZT = v.ZT / 1000;
-    device.queue.writeBuffer(lightUBuf, 0, new Float32Array([SUN_DIR[0], SUN_DIR[1], SUN_DIR[2], 0, NV >> 1, NZv >> 1, L, ZT, BMAX, 0.8, 0, 0]));
-    const lbind = device.createBindGroup({
-      layout: lightPipe.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: densTex.createView() }, { binding: 1, resource: samp },
-        { binding: 2, resource: lightTex!.createView() }, { binding: 3, resource: { buffer: lightUBuf } }
-      ]
-    });
-    const enc = device.createCommandEncoder();
-    const pass = enc.beginComputePass();
-    pass.setPipeline(lightPipe); pass.setBindGroup(0, lbind);
-    pass.dispatchWorkgroups(Math.ceil((NV >> 1) / 4), Math.ceil((NV >> 1) / 4), Math.ceil((NZv >> 1) / 4));
-    pass.end();
-    device.queue.submit([enc.finish()]);
+    device.queue.writeTexture({ texture: ownTex }, d8, { bytesPerRow: NV, rowsPerImage: NV }, [NV, NV, NZv]);
+    bindDensity(ownTex, NV, NZv, v.Rv / 1000, v.ZT / 1000);
+    relight();
   }
 
   function writeUniforms(cam: Camera, W: number, H: number): void {
     const b = cameraBasis(cam);
     device.queue.writeBuffer(renderUBuf, 0, new Float32Array([
       ...b.cp, 0, ...b.f, 0, ...b.r, 0, ...b.u, 0, ...SUN_DIR, 0,
-      W, H, b.th, vol!.Rv / 1000,
-      vol!.ZT / 1000, BMAX, 1.7, (frame++ % 64) * 1.37
+      W, H, b.th, geom!.L,
+      geom!.ZT, BMAX, 1.7, (frame++ % 64) * 1.37
     ]));
   }
   function encodeDraw(view: GPUTextureView): GPUCommandEncoder {
@@ -213,14 +218,14 @@ export async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<C
     return enc;
   }
   function render(cam: Camera, scaleIn?: number): void {
-    if (!vol || !bind) return;
+    if (!geom || !bind) return;
     const scale = scaleIn ?? Math.min(window.devicePixelRatio || 1, 1.25), W = Math.max(1, Math.round(canvas.clientWidth * scale)), H = Math.max(1, Math.round(canvas.clientHeight * scale));
     if (canvas.width !== W || canvas.height !== H) { canvas.width = W; canvas.height = H; }
     writeUniforms(cam, W, H);
     device.queue.submit([encodeDraw(ctx!.getCurrentTexture().createView()).finish()]);
   }
   async function capture(cam: Camera, W: number, H: number): Promise<ImageData | null> {
-    if (!vol || !bind) return null;
+    if (!geom || !bind) return null;
     const tex = device.createTexture({ size: [W, H], format, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     const bpr = Math.ceil(W * 4 / 256) * 256;
     const buf = device.createBuffer({ size: bpr * H, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
@@ -240,6 +245,9 @@ export async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<C
 
   return {
     kind: 'webgpu', canvas, needsCpuLighting: false, setVolume, render, capture,
-    destroy() { densTex?.destroy(); lightTex?.destroy(); noiseTex.destroy(); device.destroy(); liveAdapters.delete(adapter); }
+    device,
+    attachTexture(tex: GPUTexture, NV: number, NZ: number, Lkm: number, ZTkm: number) { bindDensity(tex, NV, NZ, Lkm, ZTkm); relight(); },
+    relight,
+    destroy() { ownTex?.destroy(); lightTex?.destroy(); noiseTex.destroy(); ctx.unconfigure(); }
   };
 }
