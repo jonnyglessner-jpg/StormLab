@@ -121,6 +121,8 @@ export function mountStorm(root: HTMLElement): () => void {
     all('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === m ? 'true' : 'false'));
     $('simBar').hidden = m !== 'sim'; $('simCard').hidden = m !== 'sim'; $('torCard').hidden = m === 'sim';
     $('svLabWrap').style.visibility = m === 'sim' ? 'hidden' : '';
+    root.querySelector<HTMLButtonElement>('[data-p="hail"]')!.hidden = m !== 'sim';
+    if (m === 'instant' && st.prod === 'hail') { st.prod = 'dbz'; all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === 'dbz' ? 'true' : 'false')); }
     $('svModeCap').textContent = m === 'sim'
       ? 'Full simulation: a 3-D cloud model grows the storm minute by minute. Press Run.'
       : 'Instant: the storm this environment supports, worked out in a second.';
@@ -131,7 +133,7 @@ export function mountStorm(root: HTMLElement): () => void {
   }
   all('[data-mode]').forEach(b => on(b, 'click', () => setMode(b.dataset.mode as 'instant' | 'sim')));
   all('[data-p]').forEach(b => on(b, 'click', () => {
-    st.prod = b.dataset.p as 'dbz' | 'vel';
+    st.prod = b.dataset.p as 'dbz' | 'vel' | 'hail';
     all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
     needRadar = true;
   }));
@@ -297,8 +299,8 @@ export function mountStorm(root: HTMLElement): () => void {
     if (st.view === '3d' && need3D) { draw3D(); need3D = false; }
     if (st.view === 'radar' && needRadar) {
       $('svTagL').textContent = st.mode === 'sim'
-        ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [])
-        : drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, st);
+        ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [], panel.swath)
+        : drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, { ...st, prod: st.prod === 'hail' ? 'dbz' : st.prod });
       needRadar = false;
     }
     requestAnimationFrame(loop);

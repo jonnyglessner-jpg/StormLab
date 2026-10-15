@@ -3,7 +3,7 @@ import { MPH } from '../../physics/constants';
 import { type Environment } from '../../physics/environment';
 import { tornadoParams, type StormDiag } from '../../physics/storm';
 import { type ChaserRenderer } from '../../render/chaser';
-import { summarize, TornadoTracker, type SimSummary, type TornadoEvent } from '../../sim/diag';
+import { HailSwath, summarize, TornadoTracker, type SimSummary, type TornadoEvent } from '../../sim/diag';
 import { createDriver, RUN_LENGTH, type DiagFrame, type SimDriver } from '../../sim/driver';
 import { app } from '../../state';
 import { fit, tok } from '../../ui/canvas';
@@ -30,6 +30,8 @@ export const SIM_CARD_HTML = `
           <div><dt>Peak updraft</dt><dd id="smW">—</dd></div>
           <div><dt>Rotation at 1 km</dt><dd id="smZ1">—</dd></div>
           <div><dt>Cold pool</dt><dd id="smCP">—</dd></div>
+          <div class="wide"><dt>Largest hail at the ground so far</dt><dd id="smHail">—</dd></div>
+          <div class="wide"><dt>Hail falling now</dt><dd id="smHailNow">—</dd></div>
         </dl>
         <canvas id="smHist" style="display:block;width:100%;height:150px" aria-label="Updraft and rotation over the simulation"></canvas>
         <div id="smTor" style="display:grid;gap:6px"></div>
@@ -46,6 +48,14 @@ export interface SimHooks {
 }
 
 const fmtClock = (t: number) => `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}`;
+/** everyday names for hail sizes (NWS comparison objects) */
+export function hailWords(mm: number): string {
+  const inch = mm / 25.4;
+  for (const [v, n] of [[4, 'softball'], [2.75, 'baseball'], [2.5, 'tennis ball'], [1.75, 'golf ball'], [1.5, 'ping-pong ball'], [1.25, 'half dollar'], [1, 'quarter'], [0.75, 'penny'], [0.5, 'marble']] as const) if (inch >= v) return n;
+  return 'pea';
+}
+const hailHTML = (mm: number, none: string) => mm < 6 ? `None<small>${none}</small>`
+  : `${(mm / 25.4).toFixed(2)} in<small>${hailWords(mm)} size, ${Math.round(mm)} mm${mm >= 25.4 ? ' · severe (1 in or larger)' : ''}</small>`;
 const efOf = (ms: number) => { const m = ms / MPH; let k = 0; for (const [i, v] of [65, 86, 111, 136, 166, 201].entries()) if (m >= v) k = i; return k; };
 
 export class SimPanel {
@@ -53,6 +63,7 @@ export class SimPanel {
   frame: DiagFrame | null = null;
   series: SimSummary[] = [];
   tracker: TornadoTracker | null = null;
+  swath: HailSwath | null = null;
   torNow: TornadoEvent | null = null;
   private starting = false;
   private speed = 180;
@@ -90,6 +101,7 @@ export class SimPanel {
     this.starting = false;
     this.envAtStart = JSON.stringify(E.o);
     this.tracker = new TornadoTracker(this.driver.g);
+    this.swath = new HailSwath(this.driver.g, this.driver.base.cu, this.driver.base.cv, RUN_LENGTH);
     this.series = []; this.torNow = null; this.frame = null;
     this.driver.speed = this.speed;
     this.driver.onDiag = f => this.onDiag(f);
@@ -110,9 +122,9 @@ export class SimPanel {
 
   restart(): void {
     this.driver?.destroy(); this.driver = null;
-    this.frame = null; this.series = []; this.torNow = null; this.tracker = null; this.focus = null;
+    this.frame = null; this.series = []; this.torNow = null; this.tracker = null; this.swath = null; this.focus = null;
     this.$('simRun').textContent = 'Run'; this.$('simClock').textContent = '0:00';
-    for (const id of ['smT', 'smW', 'smZ1', 'smCP']) this.$(id).textContent = '—';
+    for (const id of ['smT', 'smW', 'smZ1', 'smCP', 'smHail', 'smHailNow']) this.$(id).textContent = '—';
     this.$('smTor').innerHTML = '';
     this.$('simNote').textContent = '';
     this.drawHist(); this.h.redrawRadar(); this.h.redraw3D();
@@ -147,6 +159,9 @@ export class SimPanel {
     this.series.push(s);
     if (s.wmax > 5) this.focus = [(s.upI + 0.5) * f.g.dx / 1000 - f.g.NX * f.g.dx / 2000, (s.upJ + 0.5) * f.g.dy / 1000 - f.g.NY * f.g.dy / 2000];
     this.torNow = this.tracker!.update(f.t, f.diag);
+    this.swath?.add(f.t, f.diag);
+    this.$('smHail').innerHTML = hailHTML(this.swath?.max ?? 0, 'No hail has reached the ground yet');
+    this.$('smHailNow').innerHTML = hailHTML(s.hailD, 'Any hail is melting before it reaches the ground');
     this.$('smT').innerHTML = `${Math.round(f.t / 60)} min`;
     this.$('smW').innerHTML = `${Math.round(s.wmax)} m/s<small>${Math.round(s.wmax / MPH)} mph</small>`;
     this.$('smZ1').innerHTML = `${(s.zeta1 * 1000).toFixed(1)}<small>×10⁻³ s⁻¹ ${s.zeta1 >= 0.01 ? '· mesocyclone' : ''}</small>`;

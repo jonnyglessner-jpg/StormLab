@@ -5,8 +5,11 @@
  *   s = (spongeCells, spongeTau, dampZ, dampTau)            m = (omega, rhoSurface, hyper, -)
  * Per-dispatch uniform Lay (field layout):
  *   n = (nx, ny, nz, baseField+1 or 0)   o = (ox, oy, oz, isW)
- * Base-state buffer: base[f * 65 + k] with f = 0 th0, 1 qv0, 2 pi0, 3 rho0, 4 p0, 5 u0, 6 v0, 7 rhoW (k <= NZ).
+ * Base-state uniform: bs(f, k) = value f at level k, f = 0 th0, 1 qv0, 2 pi0, 3 rho0, 4 p0, 5 u0, 6 v0, 7 rhoW
+ * (k <= NZ). It lives in a uniform buffer so it doesn't count against the 8 storage buffers a kernel may bind.
+ * Microphysics, fall speeds, reflectivity and hail size are pasted in from micro.ts, shared with the CPU model.
  */
+import { BETA_BODY, DBZ_BODY, HAIL_BODY, MICRO_BODY, MP_CONST, MP_WGSL_FN } from './micro';
 
 const HEAD = /* wgsl */`
 struct Params { n: vec4u, d: vec4f, k: vec4f, s: vec4f, m: vec4f };
@@ -14,6 +17,10 @@ struct Lay { n: vec4u, o: vec4f };
 const BS: u32 = 65u;
 fn cIndex(i: u32, j: u32, k: u32) -> u32 { return (k * P.n.y + j) * P.n.x + i; }
 `;
+const BASEFN = /* wgsl */`
+fn bs(f: u32, k: u32) -> f32 { let i = f * BS + k; return BASE[i / 4u][i % 4u]; }
+`;
+const BASEDECL = (b: number) => `@group(0) @binding(${b}) var<uniform> BASE: array<vec4f, 130>;\n${BASEFN}`;
 
 /** Trilinear sampler and min/max bounds for one buffer with a given layout expression. */
 function sampler(name: string, buf: string, dims: string, off: string): string {
@@ -111,87 +118,85 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   DST[c] = clamp(v, b.x, b.y);
 }`;
 
-/** Kessler microphysics at cell centres (in place). */
+/** Microphysics at cell centres, in place (micro.ts). */
 export const MICRO = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
+${BASEDECL(1)}
 @group(0) @binding(2) var<storage, read_write> TH: array<f32>;
 @group(0) @binding(3) var<storage, read_write> QV: array<f32>;
 @group(0) @binding(4) var<storage, read_write> QC: array<f32>;
 @group(0) @binding(5) var<storage, read_write> QR: array<f32>;
-const LV: f32 = 2.5e6; const CPD: f32 = 1004.0; const RV: f32 = 461.5;
-fn qsat(T: f32, p: f32) -> f32 { let es = 610.78 * exp(17.27 * (T - 273.16) / (T - 35.86)); return 0.622 * es / max(p - es, 1.0); }
+@group(0) @binding(6) var<storage, read_write> QI: array<f32>;
+@group(0) @binding(7) var<storage, read_write> QS: array<f32>;
+@group(0) @binding(8) var<storage, read_write> QH: array<f32>;
+${MP_CONST}
+${MP_WGSL_FN}
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= P.n.x || id.y >= P.n.y || id.z >= P.n.z) { return; }
-  let c = cIndex(id.x, id.y, id.z); let k = id.z; let dt = P.d.w;
-  let pi = BASE[2u * BS + k]; let pr = BASE[4u * BS + k]; let rho = BASE[3u * BS + k];
-  var th = TH[c]; var qv = QV[c]; var qc = max(QC[c], 0.0); var qr = max(QR[c], 0.0);
-  let ar = P.k.y * max(qc - P.k.z, 0.0);
-  var cr = 0.0; if (qr > 0.0) { cr = P.k.w * qc * pow(qr, 0.875); }
-  let dqr = min(qc, dt * (ar + cr));
-  qc -= dqr; qr += dqr;
-  for (var it = 0; it < 2; it++) {
-    let T = th * pi; let qs = qsat(T, pr);
-    var dq = (qv - qs) / (1.0 + LV * LV * qs / (CPD * RV * T * T));
-    if (dq < 0.0) { dq = max(dq, -qc); }
-    qv -= dq; qc += dq; th += LV / (CPD * pi) * dq;
-  }
-  if (qr > 0.0) {
-    let T = th * pi; let qs = qsat(T, pr);
-    if (qv < qs) {
-      let r = 0.001 * rho; let rq = r * qr;
-      let er = (1.6 + 124.9 * pow(rq, 0.2046)) * pow(rq, 0.525) / (2.55e8 / (pr * qs) + 5.4e5) * ((qs - qv) / (r * qs));
-      let ern = min(min(dt * er, qr), qs - qv);
-      qr -= ern; qv += ern; th -= LV / (CPD * pi) * ern;
-    }
-  }
-  TH[c] = th; QV[c] = qv; QC[c] = qc; QR[c] = qr;
+  let c = cIndex(id.x, id.y, id.z); let k = id.z;
+  let dt = P.d.w; let pi = bs(2u, k); let pr = bs(4u, k); let rho = bs(3u, k); let rhoS = P.m.y;
+  let K1 = P.k.y; let QCCRIT = P.k.z; let K2 = P.k.w;
+  var th = TH[c]; var qv = QV[c]; var qc = QC[c]; var qr = QR[c]; var qi = QI[c]; var qs = QS[c]; var qh = QH[c];
+${MICRO_BODY}
+  TH[c] = th; QV[c] = qv; QC[c] = qc; QR[c] = qr; QI[c] = qi; QS[c] = qs; QH[c] = qh;
 }`;
 
-/** Rain sedimentation, step 1: downward mass flux rho qr Vt. */
-export const SEDFLUX = /* wgsl */`${HEAD}
+/**
+ * Sedimentation of rain, snow and hail, one thread per column: upwind flux form with Courant-limited sub-steps.
+ * ACC holds accumulated rain (plus melted snow) in [0, plane) and hail in [plane, 2 plane), mm.
+ */
+export const SED = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
-@group(0) @binding(2) var<storage, read> QR: array<f32>;
-@group(0) @binding(3) var<storage, read_write> FLUX: array<f32>;
-@compute @workgroup_size(8, 8, 4)
-fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= P.n.x || id.y >= P.n.y || id.z >= P.n.z) { return; }
-  let c = cIndex(id.x, id.y, id.z); let rho = BASE[3u * BS + id.z]; let qr = QR[c];
-  var vt = 0.0;
-  if (qr > 1e-9) { vt = 36.34 * pow(0.001 * rho * qr, 0.1364) * sqrt(P.m.y / rho); }
-  FLUX[c] = rho * qr * vt;
-}`;
-
-/** Rain sedimentation, step 2: flux divergence, and rain reaching the ground. */
-export const SEDAPPLY = /* wgsl */`${HEAD}
-@group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
+${BASEDECL(1)}
 @group(0) @binding(2) var<storage, read_write> QR: array<f32>;
-@group(0) @binding(3) var<storage, read> FLUX: array<f32>;
-@group(0) @binding(4) var<storage, read_write> RAIN: array<f32>;
-@compute @workgroup_size(8, 8, 4)
+@group(0) @binding(3) var<storage, read_write> QS: array<f32>;
+@group(0) @binding(4) var<storage, read_write> QH: array<f32>;
+@group(0) @binding(5) var<storage, read_write> ACC: array<f32>;
+${MP_CONST}
+${MP_WGSL_FN}
+@compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
-  if (id.x >= P.n.x || id.y >= P.n.y || id.z >= P.n.z) { return; }
-  let plane = P.n.x * P.n.y; let c = cIndex(id.x, id.y, id.z); let c2 = id.y * P.n.x + id.x;
-  var above = 0.0; if (id.z < P.n.z - 1u) { above = FLUX[c + plane]; }
-  QR[c] = max(0.0, QR[c] + P.d.w * (above - FLUX[c]) / (BASE[3u * BS + id.z] * P.d.z));
-  if (id.z == 0u) { RAIN[c2] = RAIN[c2] + FLUX[c] * P.d.w; }
+  if (id.x >= P.n.x || id.y >= P.n.y) { return; }
+  let plane = P.n.x * P.n.y; let c2 = id.y * P.n.x + id.x; let NZ = P.n.z; let rhoS = P.m.y; let dz = P.d.z;
+  var vmax = 0.0;
+  for (var k = 0u; k < NZ; k++) {
+    let c = k * plane + c2;
+    let v = vterm(QR[c], QS[c], QH[c], bs(3u, k), rhoS);
+    vmax = max(vmax, max(v.x, max(v.y, v.z)));
+  }
+  let ns = u32(max(1.0, ceil(vmax * P.d.w / (0.8 * dz))));
+  let h = P.d.w / f32(ns);
+  for (var n = 0u; n < ns; n++) {
+    var fa = vec3f(0.0);
+    for (var kk = 0u; kk < NZ; kk++) {
+      let k = NZ - 1u - kk; let c = k * plane + c2; let rho = bs(3u, k);
+      let q = vec3f(QR[c], QS[c], QH[c]);
+      let fk = rho * q * vterm(q.x, q.y, q.z, rho, rhoS);
+      let qn = max(vec3f(0.0), q + h / (rho * dz) * (fa - fk));
+      QR[c] = qn.x; QS[c] = qn.y; QH[c] = qn.z;
+      fa = fk;
+    }
+    ACC[c2] = ACC[c2] + (fa.x + fa.y) * h;
+    ACC[plane + c2] = ACC[plane + c2] + fa.z * h;
+  }
 }`;
 
 /** Buoyancy on interior w levels (in place). */
 export const BUOY = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
+${BASEDECL(1)}
 @group(0) @binding(2) var<storage, read_write> W: array<f32>;
 @group(0) @binding(3) var<storage, read> TH: array<f32>;
 @group(0) @binding(4) var<storage, read> QV: array<f32>;
 @group(0) @binding(5) var<storage, read> QC: array<f32>;
 @group(0) @binding(6) var<storage, read> QR: array<f32>;
+@group(0) @binding(7) var<storage, read> QI: array<f32>;
+@group(0) @binding(8) var<storage, read> QS: array<f32>;
+@group(0) @binding(9) var<storage, read> QH: array<f32>;
 fn B(c: u32, k: u32) -> f32 {
-  let th0 = BASE[k]; let qv0 = BASE[BS + k];
-  return 9.81 * ((TH[c] - th0) / th0 + 0.608 * (QV[c] - qv0) - QC[c] - QR[c]);
+  let th0 = bs(0u, k); let qv0 = bs(1u, k);
+  return 9.81 * ((TH[c] - th0) / th0 + 0.608 * (QV[c] - qv0) - QC[c] - QR[c] - QI[c] - QS[c] - QH[c]);
 }
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -224,14 +229,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 export const DIFFRELAX = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<uniform> L: Lay;
-@group(0) @binding(2) var<storage, read> BASE: array<f32>;
+${BASEDECL(2)}
 @group(0) @binding(3) var<storage, read> SRC: array<f32>;
 @group(0) @binding(4) var<storage, read_write> DST: array<f32>;
 @group(0) @binding(5) var<storage, read> LAP: array<f32>;
 ${LAYPOS}
 fn bk(k: u32) -> f32 {
   if (L.n.w == 0u) { return 0.0; }
-  return BASE[(L.n.w - 1u) * BS + min(k, P.n.z - 1u)];
+  return bs(L.n.w - 1u, min(k, P.n.z - 1u));
 }
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -263,7 +268,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 /** Divergence of rho0 u, divided by dt (right-hand side of the pressure equation). */
 export const DIV = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
+${BASEDECL(1)}
 @group(0) @binding(2) var<storage, read> U: array<f32>;
 @group(0) @binding(3) var<storage, read> V: array<f32>;
 @group(0) @binding(4) var<storage, read> W: array<f32>;
@@ -272,10 +277,10 @@ export const DIV = /* wgsl */`${HEAD}
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= P.n.x || id.y >= P.n.y || id.z >= P.n.z) { return; }
   let NX = P.n.x; let NY = P.n.y; let i = id.x; let j = id.y; let k = id.z; let plane = NX * NY;
-  let r = BASE[3u * BS + k];
+  let r = bs(3u, k);
   let du = U[(k * NY + j) * (NX + 1u) + i + 1u] - U[(k * NY + j) * (NX + 1u) + i];
   let dv = V[(k * (NY + 1u) + j + 1u) * NX + i] - V[(k * (NY + 1u) + j) * NX + i];
-  let dw = BASE[7u * BS + k + 1u] * W[(k + 1u) * plane + j * NX + i] - BASE[7u * BS + k] * W[k * plane + j * NX + i];
+  let dw = bs(7u, k + 1u) * W[(k + 1u) * plane + j * NX + i] - bs(7u, k) * W[k * plane + j * NX + i];
   D[cIndex(i, j, k)] = (r * (du / P.d.x + dv / P.d.y) + dw / P.d.z) / P.d.w;
 }`;
 
@@ -284,7 +289,7 @@ export const LINE = /* wgsl */`${HEAD}
 struct Color { c: vec4u };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<uniform> COL: Color;
-@group(0) @binding(2) var<storage, read> BASE: array<f32>;
+${BASEDECL(2)}
 @group(0) @binding(3) var<storage, read> D: array<f32>;
 @group(0) @binding(4) var<storage, read_write> PHI: array<f32>;
 @compute @workgroup_size(8, 8, 1)
@@ -295,11 +300,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   var bb: array<f32, 64>; var cc: array<f32, 64>; var rr: array<f32, 64>;
   let plane = NX * NY;
   for (var k = 0u; k < NZ; k++) {
-    let c = k * plane + j * NX + i; let r = BASE[3u * BS + k];
+    let c = k * plane + j * NX + i; let r = bs(3u, k);
     var nb = 0.0; if (i > 0u) { nb += PHI[c - 1u]; } if (i < NX - 1u) { nb += PHI[c + 1u]; }
     var nby = 0.0; if (j > 0u) { nby += PHI[c - NX]; } if (j < NY - 1u) { nby += PHI[c + NX]; }
-    var a = 0.0; if (k > 0u) { a = BASE[7u * BS + k] * idz2; }
-    var cu = 0.0; if (k < NZ - 1u) { cu = BASE[7u * BS + k + 1u] * idz2; }
+    var a = 0.0; if (k > 0u) { a = bs(7u, k) * idz2; }
+    var cu = 0.0; if (k < NZ - 1u) { cu = bs(7u, k + 1u) * idz2; }
     var b = -(a + cu) - 2.0 * r * (idx2 + idy2);
     var rhs = D[c] - r * idx2 * nb - r * idy2 * nby;
     if (k > 0u) { let m = a / bb[k - 1u]; b -= m * cc[k - 1u]; rhs -= m * rr[k - 1u]; }
@@ -365,68 +370,97 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }`;
 
 /**
- * Pack cloud and rain into the renderer's density texture: extinction (1/km) from cloud water and rain,
- * sqrt-encoded against BMAX like the instant model's volume.
+ * Pack the condensate into the renderer's density texture: extinction (1/km) from cloud water, cloud ice, snow,
+ * rain and hail, sqrt-encoded against BMAX like the instant model's volume.
  */
 export const PACK = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> QC: array<f32>;
 @group(0) @binding(2) var<storage, read> QR: array<f32>;
-@group(0) @binding(3) var OUT: texture_storage_3d<rgba8unorm, write>;
+@group(0) @binding(3) var<storage, read> QI: array<f32>;
+@group(0) @binding(4) var<storage, read> QS: array<f32>;
+@group(0) @binding(5) var<storage, read> QH: array<f32>;
+@group(0) @binding(6) var OUT: texture_storage_3d<rgba8unorm, write>;
 const BMAX: f32 = 24.0;
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= P.n.x || id.y >= P.n.y || id.z >= P.n.z) { return; }
   let c = cIndex(id.x, id.y, id.z);
-  let beta = min(BMAX, 22000.0 * max(QC[c], 0.0)) + 350.0 * max(QR[c], 0.0);
+  let qc = QC[c]; let qr = QR[c]; let qi = QI[c]; let qs = QS[c]; let qh = QH[c];
+${BETA_BODY}
   textureStore(OUT, id, vec4f(sqrt(clamp(beta / BMAX, 0.0, 1.0)), 0.0, 0.0, 1.0));
 }`;
 
 /**
- * Per-column diagnostics, ND = 10 values per column:
- *   0 reflectivity at about 600 m (dBZ)   1 u, 2 v at about 600 m (storm-relative, m/s)   3 column max w
- *   4 vertical vorticity near the ground (lowest level)   5 vertical vorticity at about 1 km
- *   6 w at about 1 km   7 theta perturbation at the lowest level (K)   8 rain accumulation (mm)   9 composite dBZ
+ * Per-column diagnostics, ND = 12 values per column, written by two kernels (to stay within 8 storage buffers):
+ *   DIAGW: 1 u, 2 v at about 600 m (storm-relative, m/s)   3 column max w   4 vertical vorticity near the ground
+ *          (lowest level)   5 vertical vorticity at about 1 km   6 w at about 1 km   7 theta perturbation at the
+ *          lowest level (K)   8 rain accumulation (mm)   11 hail accumulation (mm of water)
+ *   DIAGZ: 0 reflectivity at about 600 m (dBZ)   9 composite (column maximum) dBZ   10 largest hail at the ground (mm)
  * Vorticity is evaluated at the cell's south-west corner from the face velocities.
  */
-export const DIAG = /* wgsl */`${HEAD}
+export const DIAGW = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
-@group(0) @binding(1) var<storage, read> BASE: array<f32>;
+${BASEDECL(1)}
 @group(0) @binding(2) var<storage, read> U: array<f32>;
 @group(0) @binding(3) var<storage, read> V: array<f32>;
 @group(0) @binding(4) var<storage, read> W: array<f32>;
 @group(0) @binding(5) var<storage, read> TH: array<f32>;
-@group(0) @binding(6) var<storage, read> QR: array<f32>;
-@group(0) @binding(7) var<storage, read_write> OUT: array<f32>;
-@group(0) @binding(8) var<storage, read> RAIN: array<f32>;
+@group(0) @binding(6) var<storage, read_write> OUT: array<f32>;
+@group(0) @binding(7) var<storage, read> ACC: array<f32>;
 fn uAt(i: u32, j: u32, k: u32) -> f32 { return U[(k * P.n.y + j) * (P.n.x + 1u) + i]; }
 fn vAt(i: u32, j: u32, k: u32) -> f32 { return V[(k * (P.n.y + 1u) + j) * P.n.x + i]; }
 fn zeta(i: u32, j: u32, k: u32) -> f32 {
   if (i == 0u || j == 0u) { return 0.0; }
   return (vAt(i, j, k) - vAt(i - 1u, j, k)) / P.d.x - (uAt(i, j, k) - uAt(i, j - 1u, k)) / P.d.y;
 }
-fn dbz(c: u32, k: u32) -> f32 {
-  let rq = BASE[3u * BS + k] * max(QR[c], 0.0) * 1000.0;
-  if (rq < 1e-3) { return -99.0; }
-  return 43.1 + 17.5 * log(rq) / log(10.0);
-}
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let i = id.x; let j = id.y;
   if (i >= P.n.x || j >= P.n.y) { return; }
-  let plane = P.n.x * P.n.y; let c2 = j * P.n.x + i; let o = c2 * 10u;
+  let plane = P.n.x * P.n.y; let c2 = j * P.n.x + i; let o = c2 * 12u;
   let kl = min(u32(600.0 / P.d.z), P.n.z - 1u);
   let k1 = min(u32(1000.0 / P.d.z), P.n.z - 1u);
-  var wmax = 0.0; var comp = -99.0;
-  for (var k = 0u; k < P.n.z; k++) { wmax = max(wmax, W[k * plane + c2]); comp = max(comp, dbz(k * plane + c2, k)); }
-  OUT[o] = dbz(kl * plane + c2, kl);
+  var wmax = 0.0;
+  for (var k = 0u; k < P.n.z; k++) { wmax = max(wmax, W[k * plane + c2]); }
   OUT[o + 1u] = 0.5 * (uAt(i, j, kl) + uAt(i + 1u, j, kl));
   OUT[o + 2u] = 0.5 * (vAt(i, j, kl) + vAt(i, j + 1u, kl));
   OUT[o + 3u] = wmax;
   OUT[o + 4u] = zeta(i, j, 0u);
   OUT[o + 5u] = zeta(i, j, k1);
   OUT[o + 6u] = W[k1 * plane + c2];
-  OUT[o + 7u] = TH[c2] - BASE[0u];
-  OUT[o + 8u] = RAIN[c2];
+  OUT[o + 7u] = TH[c2] - bs(0u, 0u);
+  OUT[o + 8u] = ACC[c2];
+  OUT[o + 11u] = ACC[plane + c2];
+}`;
+
+export const DIAGZ = /* wgsl */`${HEAD}
+@group(0) @binding(0) var<uniform> P: Params;
+${BASEDECL(1)}
+@group(0) @binding(2) var<storage, read> TH: array<f32>;
+@group(0) @binding(3) var<storage, read> QR: array<f32>;
+@group(0) @binding(4) var<storage, read> QS: array<f32>;
+@group(0) @binding(5) var<storage, read> QH: array<f32>;
+@group(0) @binding(6) var<storage, read_write> OUT: array<f32>;
+${MP_CONST}
+fn dbzAt(c: u32, k: u32) -> f32 {
+  let qr = QR[c]; let qs = QS[c]; let qh = QH[c]; let rho = bs(3u, k); let T = TH[c] * bs(2u, k);
+${DBZ_BODY}
+  return zdb;
+}
+fn hailAt(qh: f32, rho: f32) -> f32 {
+${HAIL_BODY}
+  return hd;
+}
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let i = id.x; let j = id.y;
+  if (i >= P.n.x || j >= P.n.y) { return; }
+  let plane = P.n.x * P.n.y; let c2 = j * P.n.x + i; let o = c2 * 12u;
+  let kl = min(u32(600.0 / P.d.z), P.n.z - 1u);
+  var comp = -99.0;
+  for (var k = 0u; k < P.n.z; k++) { comp = max(comp, dbzAt(k * plane + c2, k)); }
+  OUT[o] = dbzAt(kl * plane + c2, kl);
   OUT[o + 9u] = comp;
+  OUT[o + 10u] = hailAt(QH[c2], bs(3u, 0u));
 }`;

@@ -43,24 +43,38 @@ is the time-stepping alternative.
 | --- | --- | --- |
 | Equations | `src/sim/model-cpu.ts` | Anelastic, on a staggered (Arakawa C) grid, in a frame moving with the Bunkers right-mover |
 | Advection | | Semi-Lagrangian with MacCormack correction and a min/max limiter |
-| Moist physics | | Kessler warm rain (Klemp & Wilhelmson 1978): saturation adjustment, autoconversion, accretion, rain evaporation, sedimentation |
+| Microphysics | `src/sim/micro.ts` | Six classes: vapour, cloud water, rain, cloud ice, snow and hail. Kessler autoconversion and accretion; ice, snow and hail processes after Lin, Farley & Orville (1983) and Gilmore et al. (2004); mixed-phase saturation adjustment after Tao et al. (1989); rain, snow and hail fall at their own speeds |
 | Mixing | | Vertical eddy diffusion plus a 4th-order horizontal filter against 2-gridpoint noise |
 | Pressure | | Projection onto div(ρ₀u) = 0, solved by red-black vertical-line relaxation |
 | Boundaries | | Lateral sponge, Rayleigh damping above 12 km, free-slip ground |
 | Start | | Updraft nudging for 15 min (Naylor & Gilmore 2012, as in CM1) |
 | GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m |
 | Fallback | `src/sim/sim.worker.ts` | CPU reference in a worker on a coarser grid when WebGPU is missing |
-| Output | `src/sim/diag.ts` | Radar reflectivity and velocity at 600 m, vorticity, cold pool, rain; tornado tracker |
+| Output | `src/sim/diag.ts` | Radar reflectivity (rain, snow and hail) and velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
 
-The GPU kernels and the CPU reference agree to about 0.1 % after 60 steps with cloud and rain
-(`tests/browser/sim-compare.ts`). Checked against CM1 with the same Weisman–Klemp environment, the model gives a
-peak updraft of about 50–55 m/s (CM1: 52–60), mid-level rotation of 0.02–0.03 s⁻¹ (CM1: 0.02–0.03), and a −4 to −8 K
-cold pool.
+The microphysics is written once, in a subset of syntax that is valid both as JavaScript and as WGSL, so the CPU
+reference and the GPU kernels run the same code. The GPU and CPU models agree to about 0.2 % after 130 steps,
+including ice, hail and hail reaching the ground (`tests/browser/sim-compare.ts`).
 
-**Limits.** No ice (so no hail, graupel or anvil ice physics), no surface friction, no radiation, a uniform
-environment. A 1 km grid resolves the storm and its mesocyclone, not the tornado. Tornadoes are flagged when strong
-near-ground rotation sits under the low-level updraft for at least a minute, and their strength is an estimate
-scaled from that circulation.
+Checked against CM1 with the same Weisman–Klemp environment at 1 km:
+
+| | This model | CM1 |
+| --- | --- | --- |
+| Peak updraft | 58–70 m/s | 52–60 m/s |
+| Rotation at 1 km | 0.01–0.04 s⁻¹ | 0.013–0.018 s⁻¹ |
+| Cold pool | −8 to −11 K | −4 to −8 K |
+| Hail at the ground | up to about 1¾ in | — |
+
+With ice the WK storm stays strong through the hour. The Plains preset still peaks at about 25 minutes and
+decays by about 50: lowering the rain evaporation or the cold pool doesn't change that, so the cause isn't the
+microphysics.
+
+**Limits.** Single-moment microphysics: each class has a fixed size distribution, so hail size is estimated from
+the hail content (the model tops out near 2 in and can't make giant hail), and hail cores read high on radar (up
+to about 80 dBZ). No surface friction, no radiation, a uniform environment. Storms in capped environments fade
+within an hour. A 1 km grid resolves the storm and its mesocyclone, not the tornado. Tornadoes are flagged when
+strong near-ground rotation sits under the low-level updraft for at least a minute, and their strength is an
+estimate scaled from that circulation.
 
 ## Tests
 
@@ -69,7 +83,9 @@ scaled from that circulation.
   pressure, the LCL rule, Bunkers deviation, zero helicity for a straight hodograph, the setup storm types, tornado
   frequency over many rolls, and radar structure (the hook is stronger than the inflow notch).
 - **Cloud model:** a calm atmosphere stays at rest, a uniform wind is carried unchanged, mass is conserved, a warm
-  bubble rises, a moist sounding makes a raining storm, a capped one stays quiet, and the tornado tracker rules hold.
+  bubble rises, a moist sounding makes a storm with rain, an ice anvil and hail at the ground, a capped one stays
+  quiet, microphysics conserves water and energy, fall speeds, reflectivity and hail sizes are realistic, the hail
+  swath lands where the storm motion puts it, and the tornado tracker rules hold.
 
 Browser checks (headless Chromium with WebGPU):
 - `tests/browser/sim-compare.ts` runs the CPU and GPU cloud models side by side.
@@ -80,6 +96,6 @@ Browser checks (headless Chromium with WebGPU):
 
 ## Roadmap
 
-1. Ice microphysics (hail, graupel, a real ice anvil) and surface friction in the cloud model.
+1. Storm longevity in capped environments: surface friction and a finer grid in the cloud model.
 2. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
 3. Tornado and wall cloud drawn in the 3-D view, and a storm-following camera for the simulation.

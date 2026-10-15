@@ -3,6 +3,7 @@ import { baseFromProfile, weismanKlempProfile } from '../../src/sim/base';
 import { type GridSpec } from '../../src/sim/grid';
 import { SimCPU } from '../../src/sim/model-cpu';
 import { SimGPU } from '../../src/sim/model-gpu';
+import { D, diagCPU, ND } from '../../src/sim/diag';
 
 const out = document.getElementById('out')!;
 const log = (s: string) => { out.textContent += s + '\n'; console.log(s); };
@@ -40,7 +41,14 @@ async function main() {
   const plane = g.NX * g.NY;
   for (let c = 0; c < base0.length; c++) base0[c] = base.th0[Math.floor(c / plane)];
   const thp = (a: Float32Array) => a.map((v, i) => v - base0[i]);
-  const rel = [cmp('w', G.w, cpu.f.w), cmp('u', G.u, cpu.f.u), cmp('th', thp(G.th), thp(cpu.f.th)), cmp('qv', G.qv, cpu.f.qv), cmp('qc', G.qc, cpu.f.qc), cmp('qr', G.qr, cpu.f.qr), cmp('phi', G.phi, cpu.f.phi)];
+  const rel = [cmp('w', G.w, cpu.f.w), cmp('u', G.u, cpu.f.u), cmp('th', thp(G.th), thp(cpu.f.th)), cmp('qv', G.qv, cpu.f.qv), cmp('qc', G.qc, cpu.f.qc), cmp('qr', G.qr, cpu.f.qr),
+    cmp('qi', G.qi, cpu.f.qi), cmp('qs', G.qs, cpu.f.qs), cmp('qh', G.qh, cpu.f.qh), cmp('phi', G.phi, cpu.f.phi), cmp('rain', G.rain, cpu.f.rain), cmp('hail', G.hail, cpu.f.hail)];
+  const dg = await gpu.readDiag(), dc = diagCPU(g, base, cpu.f);
+  if (dg) for (const [k, i] of Object.entries(D)) {
+    let md = 0, mx = 0;
+    for (let c = 0; c < g.NX * g.NY; c++) { const a = dg[c * ND + i], b = dc[c * ND + i]; if (b > -90 || a > -90) { md = Math.max(md, Math.abs(a - b)); mx = Math.max(mx, Math.abs(b)); } }
+    log(`diag ${k}: max ${mx.toPrecision(4)} max diff ${md.toPrecision(3)}`);
+  }
   log(`steps ${steps}: GPU ${tg.toFixed(0)} ms, CPU ${tc.toFixed(0)} ms`);
   document.title = 'DONE ' + Math.max(...rel).toPrecision(3);
 }

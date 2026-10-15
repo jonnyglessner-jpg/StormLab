@@ -4,22 +4,27 @@
  *   - anelastic equations on a C grid, storm-following frame
  *   - semi-Lagrangian advection with MacCormack correction and a min/max limiter
  *   - buoyancy from potential temperature, water vapour and condensate loading
- *   - Kessler (1969) warm-rain microphysics after Klemp & Wilhelmson (1978): saturation adjustment, autoconversion,
- *     accretion, rain evaporation and rain sedimentation
+ *   - six-class bulk microphysics with ice and hail (micro.ts): Kessler warm rain, LFO-type ice, snow and hail,
+ *     mixed-phase saturation adjustment, and sedimentation of rain, snow and hail
  *   - constant eddy diffusion, lateral sponge, Rayleigh damping aloft
  *   - pressure projection enforcing div(rho0 u) = 0, solved by red-black vertical-line relaxation
  */
 import { type BaseState } from './base';
 import { layouts, nC, nU, nV, nW, type GridSpec, type Layout } from './grid';
+import { MP } from './micro';
 import { C, DEFAULT_PARAMS, type Bubble, type Nudge, type SimParams } from './params';
 
 export interface SimFields {
   u: Float32Array; v: Float32Array; w: Float32Array;
   th: Float32Array; qv: Float32Array; qc: Float32Array; qr: Float32Array;
+  /** cloud ice, snow and hail mixing ratios, kg/kg */
+  qi: Float32Array; qs: Float32Array; qh: Float32Array;
   /** pressure variable p'/rho0 (m^2/s^2) */
   phi: Float32Array;
-  /** accumulated surface rain, mm */
+  /** accumulated surface rain (including melted snow), mm */
   rain: Float32Array;
+  /** accumulated surface hail, mm of water */
+  hail: Float32Array;
 }
 
 export const qsatT = (T: number, p: number): number => {
@@ -45,7 +50,8 @@ export class SimCPU {
     this.f = {
       u: new Float32Array(nU(g)), v: new Float32Array(nV(g)), w: new Float32Array(nW(g)),
       th: new Float32Array(N), qv: new Float32Array(N), qc: new Float32Array(N), qr: new Float32Array(N),
-      phi: new Float32Array(N), rain: new Float32Array(g.NX * g.NY)
+      qi: new Float32Array(N), qs: new Float32Array(N), qh: new Float32Array(N),
+      phi: new Float32Array(N), rain: new Float32Array(g.NX * g.NY), hail: new Float32Array(g.NX * g.NY)
     };
     const big = Math.max(nU(g), nV(g), nW(g));
     this.tmpA = new Float32Array(big); this.tmpB = new Float32Array(big);
@@ -60,11 +66,11 @@ export class SimCPU {
       for (let i = 0; i <= g.NX; i++) f.u[(k * g.NY + j) * (g.NX + 1) + i] = b.u0[k];
       for (let i = 0; i < g.NX; i++) {
         const c = (k * g.NY + j) * g.NX + i;
-        f.th[c] = b.th0[k]; f.qv[c] = b.qv0[k]; f.qc[c] = 0; f.qr[c] = 0; f.phi[c] = 0;
+        f.th[c] = b.th0[k]; f.qv[c] = b.qv0[k]; f.qc[c] = 0; f.qr[c] = 0; f.qi[c] = 0; f.qs[c] = 0; f.qh[c] = 0; f.phi[c] = 0;
       }
     }
     for (let k = 0; k < g.NZ; k++) for (let j = 0; j <= g.NY; j++) for (let i = 0; i < g.NX; i++) f.v[(k * (g.NY + 1) + j) * g.NX + i] = b.v0[k];
-    f.w.fill(0); f.rain.fill(0);
+    f.w.fill(0); f.rain.fill(0); f.hail.fill(0);
     this.t = 0;
   }
 
@@ -142,45 +148,46 @@ export class SimCPU {
   }
 
   /* ---------- microphysics ---------- */
+  private ms = new Float64Array(7);
+  private vt = new Float64Array(3);
   private microphysics(): void {
-    const { g, b, f, p } = this, dt = p.dt, N = nC(g);
-    for (let c = 0; c < N; c++) {
-      const k = Math.floor(c / (g.NX * g.NY)), pi = b.pi0[k], pr = b.p0[k], rho = b.rho0[k];
-      let th = f.th[c], qv = f.qv[c], qc = Math.max(f.qc[c], 0), qr = Math.max(f.qr[c], 0);
-      // autoconversion and accretion
-      const ar = p.k1 * Math.max(qc - p.qcCrit, 0), cr = qr > 0 ? p.k2 * qc * Math.pow(qr, 0.875) : 0;
-      const dqr = Math.min(qc, dt * (ar + cr));
-      qc -= dqr; qr += dqr;
-      // saturation adjustment (two Newton passes)
-      for (let it = 0; it < 2; it++) {
-        const T = th * pi, qs = qsatT(T, pr);
-        let dq = (qv - qs) / (1 + C.Lv * C.Lv * qs / (C.cp * C.Rv * T * T));
-        if (dq < 0) dq = Math.max(dq, -qc);
-        qv -= dq; qc += dq; th += C.Lv / (C.cp * pi) * dq;
+    const { g, b, f, p } = this, dt = p.dt, plane = g.NX * g.NY, rhoS = b.rho0[0], s = this.ms;
+    for (let k = 0; k < g.NZ; k++) {
+      const pi = b.pi0[k], pr = b.p0[k], rho = b.rho0[k];
+      for (let c = k * plane; c < (k + 1) * plane; c++) {
+        s[0] = f.th[c]; s[1] = f.qv[c]; s[2] = f.qc[c]; s[3] = f.qr[c]; s[4] = f.qi[c]; s[5] = f.qs[c]; s[6] = f.qh[c];
+        MP.micro(s, pi, pr, rho, rhoS, dt, p.k1, p.qcCrit, p.k2);
+        f.th[c] = s[0]; f.qv[c] = s[1]; f.qc[c] = s[2]; f.qr[c] = s[3]; f.qi[c] = s[4]; f.qs[c] = s[5]; f.qh[c] = s[6];
       }
-      // rain evaporation in subsaturated air
-      if (qr > 0) {
-        const T = th * pi, qs = qsatT(T, pr);
-        if (qv < qs) {
-          const r = 0.001 * rho, rq = r * qr;
-          const er = (1.6 + 124.9 * Math.pow(rq, 0.2046)) * Math.pow(rq, 0.525) / (2.55e8 / (pr * qs) + 5.4e5) * ((qs - qv) / (r * qs));
-          const ern = Math.min(dt * er, qr, qs - qv);
-          qr -= ern; qv += ern; th -= C.Lv / (C.cp * pi) * ern;
+    }
+    this.sediment();
+  }
+
+  /**
+   * Sedimentation of rain, snow and hail, column by column: upwind flux form, with as many sub-steps as the
+   * column's fastest fall speed needs to keep the Courant number under 0.8. Melted snow counts as rain at the ground.
+   */
+  private sediment(): void {
+    const { g, b, f, p } = this, plane = g.NX * g.NY, rhoS = b.rho0[0], vt = this.vt, dz = g.dz;
+    for (let c2 = 0; c2 < plane; c2++) {
+      let vmax = 0;
+      for (let k = 0; k < g.NZ; k++) {
+        const c = k * plane + c2;
+        MP.vterm(f.qr[c], f.qs[c], f.qh[c], b.rho0[k], rhoS, vt);
+        vmax = Math.max(vmax, vt[0], vt[1], vt[2]);
+      }
+      const ns = Math.max(1, Math.ceil(vmax * p.dt / (0.8 * dz))), h = p.dt / ns;
+      for (let n = 0; n < ns; n++) {
+        let fr = 0, fs = 0, fh = 0;
+        for (let k = g.NZ - 1; k >= 0; k--) {
+          const c = k * plane + c2, rho = b.rho0[k], qr = f.qr[c], qs = f.qs[c], qh = f.qh[c];
+          MP.vterm(qr, qs, qh, rho, rhoS, vt);
+          const kr = rho * qr * vt[0], ks = rho * qs * vt[1], kh = rho * qh * vt[2], m = h / (rho * dz);
+          f.qr[c] = Math.max(0, qr + m * (fr - kr)); f.qs[c] = Math.max(0, qs + m * (fs - ks)); f.qh[c] = Math.max(0, qh + m * (fh - kh));
+          fr = kr; fs = ks; fh = kh;
         }
+        f.rain[c2] += (fr + fs) * h; f.hail[c2] += fh * h;     // kg/m^2 = mm
       }
-      f.th[c] = th; f.qv[c] = qv; f.qc[c] = qc; f.qr[c] = qr;
-    }
-    // rain sedimentation: upwind flux form, terminal speed after Klemp & Wilhelmson (1978)
-    const rhoS = b.rho0[0], plane = g.NX * g.NY, flux = this.tmpA;
-    for (let k = 0; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
-      const c = k * plane + c2, rho = b.rho0[k], qr = f.qr[c];
-      const vt = qr > 1e-9 ? 36.34 * Math.pow(0.001 * rho * qr, 0.1364) * Math.sqrt(rhoS / rho) : 0;
-      flux[c] = rho * qr * vt;               // downward mass flux, kg/m^2/s
-    }
-    for (let k = 0; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
-      const c = k * plane + c2, above = k < g.NZ - 1 ? flux[c + plane] : 0;
-      f.qr[c] = Math.max(0, f.qr[c] + dt * (above - flux[c]) / (b.rho0[k] * g.dz));
-      if (k === 0) f.rain[c2] += flux[c] * dt;     // kg/m^2 = mm
     }
   }
 
@@ -190,7 +197,7 @@ export class SimCPU {
     // buoyancy on interior w levels
     for (let k = 1; k < g.NZ; k++) for (let c2 = 0; c2 < plane; c2++) {
       const lo = (k - 1) * plane + c2, hi = k * plane + c2;
-      const B = (cc: number, kk: number) => C.g * ((f.th[cc] - b.th0[kk]) / b.th0[kk] + 0.608 * (f.qv[cc] - b.qv0[kk]) - f.qc[cc] - f.qr[cc]);
+      const B = (cc: number, kk: number) => C.g * ((f.th[cc] - b.th0[kk]) / b.th0[kk] + 0.608 * (f.qv[cc] - b.qv0[kk]) - f.qc[cc] - f.qr[cc] - f.qi[cc] - f.qs[cc] - f.qh[cc]);
       f.w[k * plane + c2] += dt * 0.5 * (B(lo, k - 1) + B(hi, k));
     }
     // diffusion of perturbations from the base state (explicit, conservative enough at these K)
@@ -201,9 +208,13 @@ export class SimCPU {
     this.diffuse(f.qv, this.L.c, b.qv0);
     this.diffuse(f.qc, this.L.c, null);
     this.diffuse(f.qr, this.L.c, null);
+    this.diffuse(f.qi, this.L.c, null);
+    this.diffuse(f.qs, this.L.c, null);
+    this.diffuse(f.qh, this.L.c, null);
     // lateral sponge and Rayleigh damping aloft, relaxing toward the base state
     this.relax(f.u, this.L.u, b.u0); this.relax(f.v, this.L.v, b.v0); this.relax(f.w, this.L.w, null);
     this.relax(f.th, this.L.c, b.th0); this.relax(f.qv, this.L.c, b.qv0); this.relax(f.qc, this.L.c, null); this.relax(f.qr, this.L.c, null);
+    this.relax(f.qi, this.L.c, null); this.relax(f.qs, this.L.c, null); this.relax(f.qh, this.L.c, null);
     // w = 0 at the ground and the lid
     for (let c2 = 0; c2 < plane; c2++) { f.w[c2] = 0; f.w[g.NZ * plane + c2] = 0; }
   }
@@ -326,7 +337,7 @@ export class SimCPU {
     const { f, L } = this;
     // advect with the velocity at the start of the step: momentum first into copies, then scalars
     const adv = (a: Float32Array, lay: Layout) => this.advect(a, lay);
-    adv(f.th, L.c); adv(f.qv, L.c); adv(f.qc, L.c); adv(f.qr, L.c);
+    adv(f.th, L.c); adv(f.qv, L.c); adv(f.qc, L.c); adv(f.qr, L.c); adv(f.qi, L.c); adv(f.qs, L.c); adv(f.qh, L.c);
     // momentum: advect copies so every component is carried by the same (old) velocity
     const un = f.u.slice(), vn = f.v.slice(), wn = f.w.slice();
     adv(un, L.u); adv(vn, L.v); adv(wn, L.w);

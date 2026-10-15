@@ -45,7 +45,7 @@ export const STORM_HTML = `
           <button data-v="3d" aria-pressed="true">Chaser view</button><button data-v="radar">Radar</button>
         </div>
         <div class="seg" role="group" aria-label="Radar product" id="svProd" style="margin-left:0">
-          <button data-p="dbz" aria-pressed="true">Reflectivity</button><button data-p="vel">Storm-relative velocity</button>
+          <button data-p="dbz" aria-pressed="true">Reflectivity</button><button data-p="vel">Storm-relative velocity</button><button data-p="hail" hidden>Hail swath</button>
         </div>
         <label id="svLabWrap"><input type="checkbox" id="svLab" checked> Labels</label>
         <button id="svSave" type="button">Save image</button>

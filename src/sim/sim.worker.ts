@@ -5,6 +5,7 @@ import { lightVolumeCPU } from '../physics/volume';
 import { baseFromEnvironment } from './base';
 import { diagCPU } from './diag';
 import { COARSE_GRID } from './grid';
+import { MP } from './micro';
 import { SimCPU } from './model-cpu';
 import { type Nudge } from './params';
 
@@ -16,7 +17,6 @@ export interface SimWorkerOut { t: number; diag: Float32Array; vol: VolumeData |
 interface Scope { onmessage: ((e: MessageEvent<SimWorkerIn>) => void) | null; postMessage(m: SimWorkerOut, t: Transferable[]): void }
 const scope = self as unknown as Scope;
 let sim: SimCPU | null = null;
-const BMAX = 24;
 
 scope.onmessage = (e) => {
   const m = e.data;
@@ -34,7 +34,8 @@ scope.onmessage = (e) => {
   if (m.volume) {
     // same extinction mapping as the PACK kernel
     const N = g.NX * g.NY * g.NZ, beta = new Float32Array(N);
-    for (let c = 0; c < N; c++) beta[c] = Math.min(BMAX, 22000 * Math.max(sim.f.qc[c], 0)) + 350 * Math.max(sim.f.qr[c], 0);
+    const f = sim.f;
+    for (let c = 0; c < N; c++) beta[c] = MP.beta(f.qc[c], f.qr[c], f.qi[c], f.qs[c], f.qh[c]);
     const grid = { NV: g.NX, NZv: g.NZ, Rv: g.NX * g.dx / 2, ZT: g.NZ * g.dz, dxv: g.dx, dzv: g.dz };
     vol = { ...grid, beta, lit: lightVolumeCPU(beta, grid) };
   }
