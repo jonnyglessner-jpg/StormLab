@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Supercell Lab</title>
+  <meta name="description" content="Interactive supercell and tornado simulator. Set the atmosphere, watch the storm it builds, and see the tornado it produces.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="assets/app.css">
+  <script type="module" src="assets/app.js"></script>
+</head>
+<body>
+  <nav class="topbar" aria-label="Views">
+    <div class="topbar-in">
+      <a class="mark" href="#storm"><i aria-hidden="true"></i>Supercell Lab</a>
+      <div class="modnav">
+        <a href="#storm" data-mod="storm">Storm</a>
+        <a href="#tornado" data-mod="tornado">Tornado</a>
+      </div>
+    </div>
+  </nav>
+  <main id="main"><p class="loading">Loading Supercell Lab…</p></main>
+  <footer class="site-foot"><span>Physics notes and limits are on each page.</span><span id="build"></span></footer>
+</body>
+</html>

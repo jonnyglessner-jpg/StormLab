@@ -1,0 +1,21 @@
+{
+  "name": "stormlab",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Interactive supercell and tornado simulator: build the environment, watch the storm and the tornado it produces.",
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/build.mjs --serve",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/test.mjs",
+    "check": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
