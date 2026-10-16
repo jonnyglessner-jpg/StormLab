@@ -5,7 +5,7 @@ import { environment, type Environment } from '../../physics/environment';
 import { mulberry } from '../../physics/random';
 import { storm, tornadoFrom, type StormDiag, type TornadoParams } from '../../physics/storm';
 import { PRESETS, type EnvSliders } from '../../presets';
-import { createChaserRenderer, type Camera, type ChaserRenderer } from '../../render/chaser';
+import { createChaserRenderer, TARGET, type Camera, type ChaserRenderer } from '../../render/chaser';
 import { app } from '../../state';
 import { onThemeChange } from '../../ui/canvas';
 import { toEnv } from '../../units';
@@ -235,29 +235,45 @@ export function mountStorm(root: HTMLElement): () => void {
   let moving = false, settleCam = 0;
   const settleView = () => { clearTimeout(settleCam); settleCam = window.setTimeout(() => { moving = false; need3D = true; }, 160); };
   cleanup.push(() => clearTimeout(settleCam));
+  /** Free look: drag to orbit, right-drag (or shift-drag) to pan across the ground, scroll to zoom. */
   function bindOrbit(c: HTMLCanvasElement) {
-    let drag: { x: number; y: number; az: number; h: number } | null = null;
-    on(c, 'pointerdown', e => { drag = { x: e.clientX, y: e.clientY, az: cam.az, h: cam.h }; c.setPointerCapture(e.pointerId); c.style.cursor = 'grabbing'; });
+    let drag: { x: number; y: number; az: number; h: number; pan: boolean; tx: number; ty: number } | null = null;
+    on(c, 'contextmenu', e => e.preventDefault());
+    on(c, 'pointerdown', e => {
+      const pan = e.button === 2 || e.button === 1 || e.shiftKey;
+      drag = { x: e.clientX, y: e.clientY, az: cam.az, h: cam.h, pan, tx: cam.tx ?? TARGET[0], ty: cam.ty ?? TARGET[1] };
+      c.setPointerCapture(e.pointerId); c.style.cursor = pan ? 'move' : 'grabbing';
+    });
     on(c, 'pointermove', e => {
       if (!drag) return;
-      cam.az = drag.az - (e.clientX - drag.x) * 0.3;
-      cam.h = clamp(drag.h + (e.clientY - drag.y) * 0.08, 0.3, 40);
-      cam.tz = cam.h > 12 ? 2 : 5; need3D = true; moving = true;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+      if (drag.pan) {
+        // move the look-at point across the ground: sideways with the mouse, toward or away with up/down
+        const az = cam.az * Math.PI / 180, k = cam.dist * 0.0025;
+        const fx = -Math.cos(az), fy = -Math.sin(az), rx = -Math.sin(az), ry = Math.cos(az);
+        cam.tx = clamp(drag.tx - rx * dx * k + fx * dy * k, -60, 60);
+        cam.ty = clamp(drag.ty - ry * dx * k + fy * dy * k, -60, 60);
+      } else {
+        cam.az = drag.az - dx * 0.3;
+        cam.h = clamp(drag.h + dy * 0.08, 0.3, 40);
+        cam.tz = cam.h > 12 ? 2 : 5;
+      }
+      need3D = true; moving = true;
     });
     const end = () => { drag = null; c.style.cursor = 'grab'; settleView(); };
     on(c, 'pointerup', end); on(c, 'pointercancel', end);
     on(c, 'wheel', e => { e.preventDefault(); cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.001), 16, 110); need3D = true; moving = true; settleView(); }, { passive: false });
+    // double-click: jump to the simulated storm's main updraft
+    on(c, 'dblclick', () => { if (st.mode === 'sim' && panel.focus) { cam.tx = panel.focus[0]; cam.ty = panel.focus[1]; need3D = true; } });
   }
   function draw3D() {
     const tag = $('svTagL');
     if (!renderer) { tag.textContent = 'Starting the renderer…'; return; }
     if (st.mode === 'sim' && panel.driver) {
-      // ease the camera toward the simulated storm's main updraft
-      const fx = panel.focus?.[0] ?? -5, fy = panel.focus?.[1] ?? 0;
-      cam.tx = (cam.tx ?? fx) + (fx - (cam.tx ?? fx)) * 0.08; cam.ty = (cam.ty ?? fy) + (fy - (cam.ty ?? fy)) * 0.08;
-      if (Math.hypot(fx - cam.tx, fy - cam.ty) > 0.05) need3D = true;
+      // free look: the camera stays where the viewer puts it (it starts aimed at the forced updraft)
+      if (cam.tx === undefined || cam.ty === undefined) { cam.tx = -5; cam.ty = 0; }
       const az = cam.az * Math.PI / 180;
-      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, scroll to zoom`;
+      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, right-drag to pan, scroll to zoom, double-click to find the storm`;
       if (!captureOnly) renderer.render(cam, moving ? 0.5 : undefined);
       return;
     }
@@ -266,7 +282,7 @@ export function mountStorm(root: HTMLElement): () => void {
     else if (!RES?.vol) { tag.textContent = 'Building the storm…'; return; }
     else if (st.mode === 'instant') {
       const az = cam.az * Math.PI / 180;
-      tag.textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} from ${Math.round(cam.dist)} km · ${cam.h < 1 ? 'ground level' : Math.round(cam.h) + ' km up'} · drag to orbit, scroll to zoom`;
+      tag.textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} from ${Math.round(cam.dist)} km · ${cam.h < 1 ? 'ground level' : Math.round(cam.h) + ' km up'} · drag to orbit, right-drag to pan, scroll to zoom`;
     }
     if (!captureOnly) renderer.render(cam, moving ? 0.5 : undefined);
   }
