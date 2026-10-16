@@ -45,6 +45,15 @@ fn billow(p: vec3f) -> f32 { let a = 1.0 - abs(2.0 * n3(p * 0.55) - 1.0); let b 
 
 
 const NEAR = /* wgsl */`
+// The low-level mesocyclone: once the rear-flank downdraft surges, the rotating updraft's lower few km broaden over the
+// horseshoe, so its rim rises from the horseshoe's lip into the updraft. Centre and extra radius at height zr above base
+fn mesoCentre(zr: f32) -> vec2f {
+  let lo = exp(-max(zr, 0.0) / 2.5);
+  return S.up.xy + S.tilt.xy * max(zr, 0.0) + (S.rfdb.xy - S.up.xy) * 0.55 * S.rfdb.w * lo;
+}
+fn mesoExtra(zr: f32) -> f32 { return S.rfdb.z * 0.55 * S.rfdb.w * exp(-max(zr, 0.0) / 2.5); }
+// angle round the updraft measured from the inflow vault (the side facing the inflow tail), -pi..pi
+fn vaultAngle(d: vec2f) -> f32 { let v = S.tail.xy; return atan2(v.x * d.y - v.y * d.x, dot(v, d)); }
 // Near-ground features, drawn at full detail in the render pass (fine = 1) and coarsely into the volume for
 // shadows (fine = 0): the wall cloud, its tail cloud and scud, and the inflow tail. Returns density 0..1.
 fn nearField(p: vec3f, fine: f32) -> f32 {
@@ -132,10 +141,13 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
     let td = S.tail.xy; let s = dot(p.xy - t0, td);
     // the tail curves: it bends toward the forward flank as it nears the storm
     let qq = dot(p.xy - t0, vec2f(-td.y, td.x)) - 0.035 * (S.tail.z - s) * (S.tail.z - s) * 0.12 + 0.6 * sin(s * 0.35);
-    if (s > -2.0 && s < S.tail.z + 2.0 && abs(qq) < 5.0 && abs(p.z - zb) < 1.2) {
+    if (s > -2.0 && s < S.tail.z + 2.0 && abs(qq) < 5.0 && p.z > zb - 1.0 && p.z < zb + 3.0) {
       let fr = clamp(s / S.tail.z, 0.0, 1.0);
       let n = 0.55 * n3(vec3f(s * 0.05, qq * 0.45, p.z * 0.6)) + 0.45 * mix(0.5, n3(vec3f(s * 0.25, qq * 1.6, p.z * 2.5) + vec3f(0.6, 0.2, 0.4)), fine);
-      let wt = mix(2.6, 0.5, fr); let zc = zb + 0.1 + 0.45 * (1.0 - fr); let th = mix(0.5, 0.18, fr);
+      // a deep band near the storm (a kilometre or more), rising as it is drawn up into the updraft's vault,
+      // thinning and lowering to a ragged ribbon far out
+      let near = (1.0 - fr) * (1.0 - fr);
+      let wt = mix(2.6, 0.5, fr); let zc = zb + 0.2 + 1.1 * near; let th = mix(0.25, 1.0, near);
       let inT = smoothstep(-0.6, 0.6, s) * (1.0 - smoothstep(S.tail.z * 0.8, S.tail.z, s + (n - 0.5) * 4.0))
         * smoothstep(wt, wt * 0.45, abs(qq) + (n - 0.5) * 0.9) * smoothstep(th, th * 0.4, abs(p.z - zc) + (n - 0.5) * 0.12);
       v = max(v, S.tail.w * inT * 0.85);
@@ -191,7 +203,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // ---- main updraft. Low down, the rotating updraft (mesocyclone): a broad, smooth barrel with a flared skirt
   // at cloud base (its striations are cut in the render pass, where they turn). Higher up, the convective tower,
   // widening like a bell into the anvil, with a domed top and an overshooting top above it.
-  let c = S.up.xy + S.tilt.xy * max(zr, 0.0);
+  let c = mesoCentre(zr);
   let d = p.xy - c; let r = length(d);
   if (S.tower.z > 0.0) {
     let H = max(zt - zb, 0.5);
@@ -201,10 +213,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // the base of a mature supercell is broad: the rotating updraft spreads out into a wide, sloping skirt of
     // striated cloud just above cloud base (the 'mothership'), widest at the bottom
     // a young tower narrows into a turreted head; a mature one widens again toward the anvil
-    let flare = (0.9 * S.tower.w + 0.12 * (1.0 - young)) * exp(-max(zr, 0.0) / 1.0);
+    let flare = (0.55 * S.tower.w + 0.12 * (1.0 - young)) * exp(-max(zr, 0.0) / 1.0);
     // near the top a mature tower flares out like a trumpet into the anvil, rather than meeting it at a corner
     let trumpet = 1.4 * pow(ss(el - 5.0, el - 0.6, p.z), 2.0) * clamp(S.anvil.w, 0.0, 1.0);
-    let rad = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.25 * ss(0.4, 0.8, hz) + trumpet, -0.3 * hz * hz, young));
+    let rad0 = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.25 * ss(0.4, 0.8, hz) + trumpet, -0.3 * hz * hz, young));
+    let rad = rad0 + mesoExtra(zr);
     let n = fbm(p) - 0.5;
     let lump = mix(0.5, 1.7, ss(1.0, 5.0, zr)) * (1.0 - 0.75 * lam);
     let edge = rad + n * 2.2 * lump;
@@ -218,7 +231,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // the underside: rising air condensing unevenly, so not a knife-edge plane. Ragged, soft, and sloping up away
     // from the updraft core toward the rim of the skirt
     let nb = n3(p * 0.45 + vec3f(0.3, 0.8, 0.5)) - 0.5;
-    let zbase = zb + 0.35 * clamp((r - R * 0.8) / max(R, 0.5), 0.0, 1.5) + nb * 0.3;
+    // the vault: on the inflow side (to the right of and ahead of the motion) warm, moist air streams in under a
+    // raised, arched base, separating the updraft from the downdrafts behind it
+    let inDir = normalize(fw * 0.45 - lf * 0.9);
+    let ca = dot(d, inDir) / max(r, 0.01);
+    let vault = 1.3 * S.tower.w * ss(0.15, 0.85, ca) * ss(R * 0.15, R * 0.9, r);
+    let zbase = zb + 0.35 * clamp((r - R * 0.8) / max(R, 0.5), 0.0, 1.5) + vault + nb * 0.3;
     var tw = ss(ew, -ew, r - edge) * ss(zbase - 0.2, zbase + 0.35, p.z) * ss(top + 0.3, top - 0.6, p.z);
     // overshooting top: a dome pushing up through the anvil, rising as the updraft matures
     let oh = 1.8 * S.tilt.z;
@@ -279,6 +297,29 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     cloud *= 1.0 - slot;
   }
 
+  // ---- inflow: warm, moist air streaming in from the east-south-east is drawn up into the updraft. Near the storm
+  // the inflow tail thickens and climbs, rising as a smooth, banded ramp into the side of the mesocyclone: the
+  // updraft's vaulted inflow side, kept apart from the rain on the forward flank
+  if (S.tail.w > 0.0) {
+    let t0 = S.up.xy + S.f.xy * 2.5 + S.f.zw * 0.5;
+    let td = S.tail.xy; let tn = vec2f(-td.y, td.x);
+    let sT = dot(p.xy - t0, td) + R * 0.6;                       // 0 at the updraft's edge, increasing outward
+    let qT = dot(p.xy - t0, tn) - 0.035 * (S.tail.z - sT) * (S.tail.z - sT) * 0.12;
+    if (sT > -1.0 && sT < 9.0) {
+      let rise = exp(-max(sT, 0.0) / 2.6);
+      let nI = fbm(p * 1.3 + vec3f(1.7, 0.4, 2.2)) - 0.5;
+      let topI = zb + 0.45 + 3.0 * rise + nI * 0.4;
+      let botI = zb + 0.12 + 0.25 * (1.0 - rise) + nI * 0.15;
+      let wI = (1.0 + 2.2 * rise) * (0.8 + 0.4 * nI);
+      // laminar bands along the inflow
+      let band = 0.85 + 0.15 * sin(6.2832 * (p.z - zb) / 0.45 + sT * 0.4);
+      let iv = S.tail.w * 0.9 * ss(wI + 0.4, wI - 0.6, abs(qT)) * ss(botI - 0.1, botI + 0.2, p.z) * ss(topI + 0.3, topI - 0.5, p.z)
+        * ss(-1.0, 0.5, sT) * (1.0 - ss(6.0, 9.0, sT)) * band;
+      mw += iv * iv; ms += iv * iv * water(0.15);
+      cloud = max(cloud, iv);
+    }
+  }
+
   // ---- anvil: ice spreading out under the tropopause. Seen from above (satellite), an oval canopy drawn out along
   // the wind aloft: its upwind end a sharp, rounded edge just upwind of the updraft (pushed there by the backshear),
   // bubbly with overshooting tops near the updraft, its widest part well downwind, tapering again far downstream.
@@ -302,7 +343,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let su = (s - sc) / A;
     let Bq = B * (1.0 - 0.18 * su);
     let e = length(vec2f(su, q / max(Bq, 0.5)));
-    let outD = (e - 1.0) * min(Bq, A);
+    // the updraft spreads out in all directions under the tropopause: a round canopy round it, merged with the oval
+    let outD = min((e - 1.0) * min(Bq, A), length(p.xy - a0) - R * 2.6 * (0.6 + 0.4 * grow));
     let inPlan = ss(1.4, -2.0, outD + n * 1.0 + streak * (0.5 + 1.0 * fr));
     // cross-section: a lens, thinning to feathered edges (but a sharp, steep edge upwind)
     let qe = clamp(e, 0.0, 1.0);
@@ -392,6 +434,27 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         * ss(zb - 0.1 + nb * 0.3, zb + 0.3 + nb * 0.3, p.z) * ss(zb + 0.8 + nb * 0.4, zb + 0.35, p.z) * 0.7;
       mw += sh * sh; ms += sh * sh * water(0.6);
       cloud = max(cloud, sh);
+    }
+  }
+
+  // ---- towers on the rear-flank gust front: the surge lifts the air at its edge into cumulus that build up the side
+  // of the storm and merge with the updraft, so the horseshoe lip is the base of rising cloud
+  if (S.rfdb.w > 0.0 && S.rfdb.z > 0.0) {
+    let rc = S.rfdb.xy; let Rs = S.rfdb.z;
+    for (var k = 0u; k < 5u; k++) {
+      let fk = f32(k);
+      // along the arc from the south arm (-170 deg) through the east to the north arm (+60 deg)
+      let th = radians(-165.0 + fk * 52.0);
+      let dir = cos(th) * fw + sin(th) * lf;
+      let h1 = hash1(fk * 3.3 + 7.1); let h2 = hash1(fk * 5.9 + 1.7);
+      let ctr = rc + dir * Rs * (1.0 + 0.15 * h1);
+      // taller toward the updraft, leaning in toward it
+      let toUp = S.up.xy - ctr; let dU = length(toUp);
+      let Hk = (zt - zb) * (0.28 + 0.3 * h2) * (0.6 + 0.4 * ss(R * 3.0, R * 1.0, dU)) * S.rfdb.w;
+      let lean = toUp / max(dU, 0.1) * 0.12 * max(zr, 0.0);
+      let fv = congestus(p, ctr + lean, (1.1 + 0.6 * h1) * (0.6 + 0.4 * S.rfdb.w), zb + 0.05, zb + Hk, 20.0 + fk * 2.3);
+      mw += fv * fv; ms += fv * fv * water(1.0);
+      cloud = max(cloud, fv);
     }
   }
 
@@ -541,8 +604,10 @@ fn detail(q: vec3f, turb: f32, lod: f32) -> f32 {
 }
 // striations: grooves stacked up the side of the rotating updraft, rings with a slow wave in them; ang and w are
 // taken in the rotating frame, so the wave (and with it the grooves) visibly turns
-fn grooves(zr: f32, ang: f32, w: f32) -> f32 {
-  let ph = zr / 0.8 + 0.2 * sin(ang * 2.0 + w * 4.0) + 1.1 * w + ang / 6.2832;
+// av: angle from the inflow vault in the still frame; the bands sweep down toward it from both sides, so the
+// striations all point in to where the inflow enters
+fn grooves(zr: f32, ang: f32, w: f32, av: f32) -> f32 {
+  let ph = zr / 0.8 + 0.2 * sin(ang * 2.0 + w * 4.0) + 1.1 * w + 0.35 * ang / 6.2832 + 1.7 * (1.0 - abs(av) / 3.1416);
   let g = fract(ph);
   return pow(g, 1.4) * smoothstep(1.0, 0.72, g);   // eased back to the next lip, so no hard step to alias
 }
@@ -615,10 +680,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         // the updraft turns counter-clockwise: near it, detail is sampled in a frame rotating with the mesocyclone,
         // blended into the still frame around it so there is no seam
         let zr = q.z - S.base.x;
-        let uc = S.up.xy + S.tilt.xy * max(zr, 0.0);
+        let uc = mesoCentre(zr);
         let ud = q.xy - uc; let ur = length(ud);
         let mR = max(S.tower.y, 0.5);
-        let radAt = mR * (1.0 + (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0) / 1.0));
+        let radAt = mR * (1.0 + (0.55 * S.tower.w + 0.12) * exp(-max(zr, 0.0) / 1.0)) + mesoExtra(zr);
         let m = select(0.0, (1.0 - smoothstep(1.25 * radAt, 2.0 * radAt, ur)) * (1.0 - smoothstep(6.0, 9.0, zr)) * smoothstep(-0.6, -0.1, zr), S.tilt.w > 0.0);
         var nn = 0.5; var stri = 0.0;
         let lod = smoothstep(3.0, 18.0, t);
@@ -628,10 +693,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             let udr = rot2(ud, -S.tilt.w * S.base.z);
             let qr = vec3f(uc + udr, q.z);
             nn = mix(nn, detail(qr, turb, lod), m);
-            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(0.4, 1.0, zr);   // on the sides, not the ragged base
+            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(0.15, 0.7, zr);   // on the sides, not the ragged base
             // only on the updraft's own surface, not on flanking towers that come within reach
             let own = 1.0 - smoothstep(0.75 * radAt, 1.05 * radAt, ur);   // not on the thin rim of the skirt, where grooves would cut teeth
-            if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2))); }
+            if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2)), vaultAngle(ud)); }
           }
         }
         // water cloud: the field plus billowed detail, cut at a crisp threshold
