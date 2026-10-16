@@ -2,7 +2,8 @@
 //   node scripts/build.mjs           -> dist/
 //   node scripts/build.mjs --serve   -> http://localhost:5173
 import * as esbuild from 'esbuild';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 
 const serve = process.argv.includes('--serve');
@@ -39,4 +40,11 @@ if (serve) {
 } else {
   await Promise.all(builds.map(b => esbuild.build(b)));
   await copyStatic();
+  // cache-busting: tag each asset URL with a hash of its contents, so a new deploy is picked up on the next load
+  let html = await readFile(`${outdir}/index.html`, 'utf8');
+  for (const f of ['app.js', 'app.css']) {
+    const v = createHash('sha256').update(await readFile(`${outdir}/assets/${f}`)).digest('hex').slice(0, 10);
+    html = html.replace(`assets/${f}"`, `assets/${f}?v=${v}"`);
+  }
+  await writeFile(`${outdir}/index.html`, html);
 }
