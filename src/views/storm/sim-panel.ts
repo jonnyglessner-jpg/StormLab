@@ -10,7 +10,7 @@ import { fit, tok } from '../../ui/canvas';
 import { EF_COLORS } from './efchart';
 
 export const SIM_BAR_HTML = `
-      <div class="row" id="simBar" hidden style="gap:10px">
+      <div class="row" id="simBar" style="gap:10px">
         <button id="simRun" type="button" style="min-width:74px">Run</button>
         <button id="simReset" type="button">Restart</button>
         <div class="seg" role="group" aria-label="Simulation speed" id="simSpeed" style="margin-left:0">
@@ -25,7 +25,7 @@ export const SIM_BAR_HTML = `
       </div>`;
 
 export const SIM_CARD_HTML = `
-      <div class="card" id="simCard" hidden>
+      <div class="card" id="simCard">
         <div class="cardhead"><h2>Simulation</h2>
           <div class="legend"><span><i class="ln" style="color:var(--hot)"></i>Peak updraft</span><span><i class="ln" style="color:var(--press)"></i>Rotation at 1 km</span><span><i class="ln d" style="color:var(--accent)"></i>Rotation near the ground</span></div>
         </div>
@@ -39,7 +39,7 @@ export const SIM_CARD_HTML = `
         </dl>
         <canvas id="smHist" style="display:block;width:100%;height:150px" aria-label="Updraft and rotation over the simulation"></canvas>
         <div id="smTor" style="display:grid;gap:6px"></div>
-        <p class="cap" id="smCap">The cloud model solves the equations of motion for the atmosphere you set, on a grid of 1 km boxes 400 m deep. Nothing in the storm is drawn by hand: it grows from a forced updraft in its first 15 minutes, then runs on its own.</p>
+        <p class="cap" id="smCap">The cloud model solves the equations of motion for the atmosphere you set, on a grid of 1 km boxes 400 m deep. Nothing in the storm is drawn by hand: it starts from a field of cumulus clouds and runs on its own.</p>
       </div>`;
 
 export interface SimHooks {
@@ -49,6 +49,8 @@ export interface SimHooks {
   renderer(): ChaserRenderer | null;
   redraw3D(): void;
   redrawRadar(): void;
+  /** show an empty sky while no simulation owns the 3-D volume */
+  clearVolume(): void;
 }
 
 const fmtClock = (t: number) => `${Math.floor(t / 3600)}:${String(Math.floor(t / 60) % 60).padStart(2, '0')}`;
@@ -72,7 +74,6 @@ export class SimPanel {
   private starting = false;
   private speed = 180;
   private fine = false;
-  private envAtStart: string | null = null;
   private $ = <T extends HTMLElement = HTMLElement>(id: string) => this.h.root.querySelector<T>('#' + id)!;
 
   constructor(private h: SimHooks) {
@@ -111,7 +112,6 @@ export class SimPanel {
       return false;
     }
     this.starting = false;
-    this.envAtStart = JSON.stringify(E.o);
     this.tracker = new TornadoTracker(this.driver.g);
     this.swath = new HailSwath(this.driver.g, this.driver.base.cu, this.driver.base.cv, RUN_LENGTH);
     this.series = []; this.torNow = null; this.frame = null;
@@ -121,7 +121,7 @@ export class SimPanel {
     this.$('simNote').textContent = this.driver.kind === 'gpu'
       ? `On your GPU · ${g.NX}×${g.NY}×${g.NZ} grid, ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`}`
       : `On the CPU (no WebGPU) · coarser ${g.dx / 1000} km grid, slower${this.fine ? ' · the 500 m grid needs WebGPU' : ''}`;
-    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`} boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: it grows from a forced updraft in its first 15 minutes, then runs on its own.`;
+    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`} boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: it starts from a field of cumulus clouds and runs on its own.`;
     return true;
   }
 
@@ -133,7 +133,7 @@ export class SimPanel {
   }
 
   restart(): void {
-    this.driver?.destroy(); this.driver = null;
+    this.driver?.destroy(); this.driver = null; this.h.clearVolume();
     this.frame = null; this.series = []; this.torNow = null; this.tracker = null; this.swath = null; this.focus = null;
     this.$('simRun').textContent = 'Run'; this.$('simClock').textContent = '0:00';
     for (const id of ['smT', 'smW', 'smZ1', 'smCP', 'smHail', 'smHailNow']) this.$(id).textContent = '—';
@@ -145,13 +145,6 @@ export class SimPanel {
 
   /** Re-point the renderer at the simulation's volume (after the instant model has used it). */
   attach(): void { this.driver?.attach(); this.h.redraw3D(); }
-
-  /** Called when the sliders change: the running simulation keeps its original environment. */
-  envChanged(E: Environment): void {
-    if (!this.driver) return;
-    const same = JSON.stringify(E.o) === this.envAtStart;
-    this.$('simNote').textContent = same ? '' : 'The sliders changed. Restart to simulate the new environment.';
-  }
 
   tick(wallDt: number): void {
     const d = this.driver;

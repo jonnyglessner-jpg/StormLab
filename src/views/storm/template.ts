@@ -8,57 +8,30 @@ const presetCards = Object.entries(PRESETS).map(([k, p]) =>
 export const STORM_HTML = `
 <div class="wrap">
   <header>
-    <div class="eyebrow">Instant storm model · parcel theory, Bunkers motion, precipitation trajectories</div>
+    <div class="eyebrow">3-D cloud model · ice and hail microphysics · runs on your GPU</div>
     <h1>Supercell Lab</h1>
-    <p class="lede">Pick a setup and watch the storm it supports. Each one is a different kind of severe-weather day. From its sounding and winds, the model works out the updraft, the rotation and where the rain and hail fall, then sends any tornado the storm produces to the Tornado Lab.</p>
+    <p class="lede">Pick a severe-weather setup and grow the storm. A cloud model solves the equations of motion for that atmosphere: cumulus build under the cap, one tower breaks through, and the storm organises, rotates, drops hail and may put down a tornado. Any tornado it makes opens in the Tornado Lab.</p>
   </header>
   <section class="bench">
     <div class="stagecol">
-      <div class="row" style="gap:10px">
-        <div class="seg" role="group" aria-label="Model" id="svMode" style="margin-left:0">
-          <button data-mode="instant" aria-pressed="true">Instant model</button><button data-mode="sim">Full simulation</button>
-        </div>
-        <span class="gpu-note" id="svModeCap">Instant: the storm this environment supports, worked out in a second.</span>
-      </div>
       <div class="stage">
         <canvas id="svGL" aria-label="Three-dimensional view of the storm" style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;cursor:grab;touch-action:none"></canvas>
         <canvas id="svRadar" aria-label="Radar view of the storm" hidden style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;background:#11171a"></canvas>
         <span class="tag tl" id="svTagL">—</span>
         <span class="tag tr" id="svTagR">—</span>
-        <div id="svBanner" hidden style="position:absolute;left:10px;right:10px;bottom:10px;font-size:13px;color:#f3efe4;background:rgba(18,24,26,.78);padding:8px 10px;border-radius:6px"></div>
+        <div id="svStart" class="startover"><button type="button" id="svStartBtn">Grow the storm</button><p>Starts from a field of cumulus clouds and runs for up to two hours of storm time.</p></div>
       </div>
       <div class="row" style="gap:10px">
         <div class="seg" role="group" aria-label="View" style="margin-left:0">
           <button data-v="3d" aria-pressed="true">Chaser view</button><button data-v="radar">Radar</button>
         </div>
         <div class="seg" role="group" aria-label="Radar product" id="svProd" style="margin-left:0">
-          <button data-p="dbz" aria-pressed="true">Reflectivity</button><button data-p="vel">Storm-relative velocity</button><button data-p="hail" hidden>Hail swath</button>
+          <button data-p="dbz" aria-pressed="true">Reflectivity</button><button data-p="vel">Storm-relative velocity</button><button data-p="hail">Hail swath</button>
         </div>
-        <label id="svLabWrap"><input type="checkbox" id="svLab" checked> Labels</label>
         <button id="svSave" type="button">Save image</button>
         <span class="gpu-note" id="svGpu"></span>
       </div>${SIM_BAR_HTML}
-      <dl class="read" aria-live="polite">
-        <div class="wide"><dt>Storm type</dt><dd><span id="rType">—</span><small id="rTypeSub">—</small></dd></div>
-        <div class="wide"><dt>Updraft</dt><dd><span id="rW">—</span><small id="rWSub">—</small></dd></div>
-        <div><dt>Mid-level rotation</dt><dd id="rMid">—</dd></div>
-        <div><dt>Low-level rotation</dt><dd id="rLow">—</dd></div>
-        <div><dt>Largest hail</dt><dd id="rHail">—</dd></div>
-        <div><dt>Storm motion</dt><dd id="rMove">—</dd></div>
-      </dl>
-      <div class="card" id="torCard">
-        <div class="cardhead"><h2>Tornado outlook</h2></div>
-        <div style="display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 16px;align-items:center">
-          <div id="tPct" style="font-family:var(--f-display);font-weight:600;font-size:46px;line-height:1">—</div>
-          <div><div id="tHead" style="font-weight:600">—</div><p class="cap" id="tWhy">—</p></div>
-        </div>
-        <canvas id="tEF" style="display:block;width:100%;height:118px" aria-label="Chance of each EF rating if a tornado forms"></canvas>
-        <div class="row" style="gap:8px;flex-wrap:wrap">
-          <button id="tTyp">Typical tornado from this storm</button>
-          <button id="tRoll">Roll the dice</button>
-        </div>
-        <p class="cap" id="tRes" aria-live="polite"></p>
-      </div>${SIM_CARD_HTML}
+      ${SIM_CARD_HTML}
     </div>
     <aside class="rack" aria-label="Setups">
       <h2>Setups</h2>
@@ -99,22 +72,22 @@ export const STORM_HTML = `
     <div style="display:grid;gap:10px">
       <h2>What the model does</h2>
       <ol>
-        <li><b>Sounding.</b> A well-mixed afternoon boundary layer up to the cumulus base, a humid layer above it on days with deep moisture, a capping inversion on top of that, then the setup's mid-level lapse rate between 3 and 6 km. A 1 km mixed-layer parcel is lifted dry to its LCL and then pseudoadiabatically, with virtual temperature, to get CAPE, CIN and the equilibrium level.</li>
-        <li><b>Winds.</b> South-west flow: a south-easterly surface wind veering through a southerly low-level jet to south-westerlies aloft, with the strength of each set by the setup. Storm motion uses the Bunkers right-mover method, and helicity is computed relative to it.</li>
-        <li><b>Storm.</b> Updraft speed is half the parcel-theory value √(2·CAPE), the usual result once entrainment and water loading are counted, plus up to 35% from the rotation-driven pressure lift in helical environments. Storm mode follows the 0–6 km shear thresholds used in forecasting (about 20 and 40 kt). Mesocyclone strength scales with √SRH. Precipitation type follows storm-relative anvil-level wind: under about 35 kt is HP, about 35–55 kt classic, above that LP.</li>
-        <li><b>Radar and cloud.</b> Thousands of rain, snow and hail particles are released from the updraft and carried by an analytic storm flow, made up of the environmental winds, flow around the updraft, a rotating mesocyclone, a rear-flank downdraft and outflow. They fall at their own speeds, melt below the freezing level and evaporate in dry air. Where they spend time is what the radar shows and what the cloud view renders. Below about 2.5 km, rear-flank precipitation is carried around the low-level mesocyclone, which draws the hook.</li>
-        <li><b>Tornado.</b> The chance of a tornado and its likely strength come from the Significant Tornado Parameter, scaled to match how often supercells in such environments produce tornadoes and how the share of EF2+ tornadoes rises with STP in SPC climatology. A tornado from the storm takes its cloud base, forward speed and precipitation type directly from the environment.</li>
+        <li><b>Atmosphere.</b> Each setup is a sounding and a hodograph: a well-mixed afternoon boundary layer up to cloud base, a humid layer above it on days with deep moisture, a capping inversion, the setup's mid-level lapse rate, and south-west flow veering with height. CAPE, CIN and helicity are worked out from them the way forecasters do.</li>
+        <li><b>Cloud model.</b> The anelastic equations of motion on a 3-D grid of 1 km boxes (500 m optional) 400 m deep, about 90 km across, moving with the storm. It is the same kind of model research groups use (CM1, WRF), simplified to run in a browser on your GPU (or, more slowly and coarsely, on the CPU).</li>
+        <li><b>Clouds, rain, ice and hail.</b> Six kinds of water: vapour, cloud droplets, rain, cloud ice, snow and hail, with the processes that turn one into another (condensation, freezing, riming, melting, evaporation) and their own fall speeds. Evaporating rain and melting hail make the cold outflow.</li>
+        <li><b>Start.</b> A field of cumulus clouds is pushed up for the first few minutes, as along a weak boundary. Everything after that, the tower breaking the cap, the anvil, the mesocyclone, the hook and the hail, comes out of the equations.</li>
+        <li><b>Radar and tornadoes.</b> Reflectivity is computed from the rain, snow and hail; velocity from the winds along the radar beam. A 1 km grid can't resolve a tornado, so one is flagged when strong rotation near the ground sits under the updraft for a minute, and its strength is estimated from that rotation.</li>
       </ol>
     </div>
     <div style="display:grid;gap:10px">
       <h2>Limits</h2>
       <ul>
-        <li>The instant model is diagnostic, not a cloud model. Its storm is steady: it doesn’t grow, cycle or interact with other storms, and its flow fields are shaped to match observed supercell structure rather than solved. Full simulation mode is the cloud model.</li>
-        <li>No fronts, drylines, terrain or daytime heating changes. Storms form whenever CIN is weaker than about −200 J/kg, as if something lifted the air.</li>
-        <li>Tornado odds are climatological. The same environment produces tornadoes on some days and not on others, which is why there’s a dice button.</li>
-        <li>Radar reflectivity is calibrated to typical values. The pattern comes from the trajectories, but the exact dBZ numbers are approximate.</li>
+        <li>The environment is the same everywhere and doesn't change: no fronts, drylines, terrain, daytime heating or neighbouring storms.</li>
+        <li>The grid resolves the storm and its mesocyclone, not the tornado. Tornado strength is an estimate.</li>
+        <li>Each kind of water has a fixed size distribution, so hail tops out near 2 inches and hail cores read high on radar.</li>
+        <li>Storms in modest instability (Ohio Valley, Dixie) tend to fade after about 50 minutes.</li>
       </ul>
-      <p class="refs">Thompson et al. (2003, 2012) for SCP and STP; Smith et al. (2015) for tornado intensity versus STP; Bunkers et al. (2000); Rasmussen &amp; Straka (1998) for precipitation type; Lemon &amp; Doswell (1979) for the rear-flank downdraft and hook; Weisman &amp; Klemp (1982) for shear and storm type.</p>
+      <p class="refs">Klemp &amp; Wilhelmson (1978) and Bryan &amp; Fritsch (2002) for the model equations; Lin, Farley &amp; Orville (1983), Tao et al. (1989) and Gilmore et al. (2004) for the microphysics; Naylor &amp; Gilmore (2012) for the start; Thompson et al. (2003, 2012) for SCP and STP; Bunkers et al. (2000) for storm motion.</p>
     </div>
   </section>
 </div>`;

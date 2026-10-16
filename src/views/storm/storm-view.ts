@@ -1,34 +1,29 @@
-/** Storm view: setup -> sounding, hodograph, storm, radar, chaser view and tornado outlook. */
-import { clamp, FT, KT, MPH } from '../../physics/constants';
-import { type ComputeOptions, type ComputeResult } from '../../physics/compute';
+/**
+ * Storm view: pick a setup, grow the storm in the cloud model, and watch it in 3-D (chaser view) or on a radar map,
+ * with the setup's sounding and hodograph below.
+ */
+import { clamp, FT, KT } from '../../physics/constants';
 import { environment, type Environment } from '../../physics/environment';
-import { mulberry } from '../../physics/random';
-import { storm, tornadoFrom, type StormDiag, type TornadoParams } from '../../physics/storm';
+import { storm, type StormDiag } from '../../physics/storm';
+import { lightVolumeCPU, type VolumeData } from '../../physics/volume';
 import { envOf, PRESETS, type EnvSliders } from '../../presets';
 import { createChaserRenderer, TARGET, type Camera, type ChaserRenderer } from '../../render/chaser';
 import { app } from '../../state';
 import { onThemeChange } from '../../ui/canvas';
 import { toEnv } from '../../units';
-import type { WorkerRequest, WorkerResponse } from '../../workers/storm.worker';
-import { drawEF } from './efchart';
 import { drawHodograph } from './hodograph';
-import { drawRadar } from './radar';
 import { drawSkewT } from './skewt';
 import { SimPanel } from './sim-panel';
 import { drawSimRadar, MapView, toGround } from './sim-radar';
 import { STORM_HTML } from './template';
 
-const EFT = [65, 86, 111, 136, 166, 201];
-const efOf = (m: number) => { let k = 0; for (let i = 0; i < 6; i++) if (m >= EFT[i]) k = i; return k; };
-const kt = (ms: number) => Math.round(ms / KT), mph = (ms: number) => Math.round(ms / MPH);
+const kt = (ms: number) => Math.round(ms / KT);
 const compass = (u: number, v: number) => ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(((Math.atan2(u, v) * 180 / Math.PI + 360) % 360) / 22.5) % 16];
-function hailName(inch: number): [string, string] {
-  if (inch >= 4) return ['Softball+', `${inch.toFixed(1)} in`];
-  if (inch >= 2.75) return ['Baseball', `${inch.toFixed(1)} in`];
-  if (inch >= 1.75) return ['Golf ball', `${inch.toFixed(1)} in`];
-  if (inch >= 1) return ['Quarter', `${inch.toFixed(1)} in`];
-  if (inch >= 0.5) return ['Small hail', `${inch.toFixed(1)} in`];
-  return ['None', 'Updraft too weak to grow hail'];
+
+/** An empty sky, so the 3-D view shows the ground and sky before a run starts. */
+function emptyVolume(lit: boolean): VolumeData {
+  const NV = 8, NZv = 8, grid = { NV, NZv, Rv: 48000, ZT: 16000, dxv: 12000, dzv: 2000 }, beta = new Float32Array(NV * NV * NZv);
+  return { ...grid, beta, lit: lit ? lightVolumeCPU(beta, grid) : null };
 }
 
 export function mountStorm(root: HTMLElement): () => void {
@@ -44,125 +39,35 @@ export function mountStorm(root: HTMLElement): () => void {
   const st = app.stormView;
   if (!PRESETS[st.preset]) st.preset = 'plains';
   const o: EnvSliders = envOf(PRESETS[st.preset]);
-  let E: Environment | null = null, S: StormDiag | null = null, RES: ComputeResult | null = null, tor: TornadoParams | null = null;
+  let E: Environment | null = null, S: StormDiag | null = null;
   let renderer: ChaserRenderer | null = null, need3D = true, needRadar = true;
 
-  /* ---------- worker ---------- */
-  const worker = new Worker(new URL('./storm.worker.js', import.meta.url), { type: 'module' });
-  cleanup.push(() => worker.terminate());
-  let reqId = 0, busy = false, queued: ComputeOptions | null = null;
-  worker.onmessage = (e: MessageEvent<WorkerResponse>) => {
-    busy = false;
-    if (alive) take(e.data.result);
-    if (queued) { const q = queued; queued = null; request(q); }
-  };
-  worker.onerror = (e) => { busy = false; console.error('storm worker', e.message); };
-  function request(opt: ComputeOptions) {
-    if (busy) { queued = opt; return; }
-    busy = true;
-    const msg: WorkerRequest = { id: ++reqId, env: toEnv(o), opt };
-    worker.postMessage(msg);
-  }
-  const fullOpt = (): ComputeOptions => ({ volume: true, nRel: 3000, cpuLighting: renderer ? renderer.needsCpuLighting : true });
-  function take(r: ComputeResult) {
-    const keep = RES?.vol ?? null;
-    RES = r;
-    if (r.vol) { if (st.mode === 'instant') renderer?.setVolume(r.vol); } else RES.vol = keep;
-    need3D = needRadar = true;
-  }
+  /* ---------- the simulation ---------- */
+  const panel = new SimPanel({
+    root, env: () => E, storm: () => S, renderer: () => renderer,
+    redraw3D: () => { need3D = true; }, redrawRadar: () => { needRadar = true; },
+    clearVolume: () => { renderer?.setVolume(emptyVolume(renderer.needsCpuLighting)); need3D = true; }
+  });
+  cleanup.push(() => panel.destroy());
+  on($('svStartBtn'), 'click', () => { void panel.toggle(); });
 
-  /* ---------- controls ---------- */
-  let settleT = 0;
-  function changed(full: boolean) {
-    app.env = { ...o };
-    diagnose();
-    if (E) panel.envChanged(E);
-    tor = null; $('tRes').textContent = '';
-    clearTimeout(settleT);
-    if (full) request(fullOpt());
-    else { request({ volume: false, nRel: 900, cpuLighting: false }); settleT = window.setTimeout(() => request(fullOpt()), 350); }
-  }
-  /** Select a setup: its environment, its card and its description. */
+  /* ---------- setups ---------- */
   function selectPreset(key: string) {
     st.preset = key;
     Object.assign(o, envOf(PRESETS[key]));
     all('[data-pre]').forEach(x => x.setAttribute('aria-pressed', x.dataset.pre === key ? 'true' : 'false'));
     $('pName').textContent = PRESETS[key].name; $('pWatch').textContent = PRESETS[key].watch;
+    app.env = { ...o };
+    diagnose();
   }
   all('[data-pre]').forEach(b => on(b, 'click', () => {
     if (b.dataset.pre === st.preset) return;
-    selectPreset(b.dataset.pre!); changed(true);
-  }));
-  function setView(v: '3d' | 'radar') {
-    st.view = v;
-    all('[data-v]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v ? 'true' : 'false'));
-    (renderer?.canvas ?? $('svGL')).hidden = v !== '3d'; $('svRadar').hidden = v !== 'radar';
-    $('svProd').style.display = v === 'radar' ? '' : 'none'; $('svLabWrap').style.display = v === 'radar' ? '' : 'none'; $('svSave').style.display = v === '3d' ? '' : 'none';
+    selectPreset(b.dataset.pre!);
+    if (panel.driver) panel.restart();          // a new setup is a new run
     need3D = needRadar = true;
-  }
-  all('[data-v]').forEach(b => on(b, 'click', () => setView(b.dataset.v as '3d' | 'radar')));
-
-  /* ---------- instant model vs full simulation ---------- */
-  const panel = new SimPanel({
-    root, env: () => E, storm: () => S, renderer: () => renderer,
-    redraw3D: () => { need3D = true; }, redrawRadar: () => { needRadar = true; }
-  });
-  cleanup.push(() => panel.destroy());
-  function setMode(m: 'instant' | 'sim') {
-    st.mode = m;
-    all('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === m ? 'true' : 'false'));
-    $('simBar').hidden = m !== 'sim'; $('simCard').hidden = m !== 'sim'; $('torCard').hidden = m === 'sim';
-    $('svLabWrap').style.visibility = m === 'sim' ? 'hidden' : '';
-    root.querySelector<HTMLButtonElement>('[data-p="hail"]')!.hidden = m !== 'sim';
-    if (m === 'instant' && st.prod === 'hail') { st.prod = 'dbz'; all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === 'dbz' ? 'true' : 'false')); }
-    $('svModeCap').textContent = m === 'sim'
-      ? 'Full simulation: a 3-D cloud model grows the storm minute by minute. Press Run.'
-      : 'Instant: the storm this environment supports, worked out in a second.';
-    if (m === 'sim') { if (panel.driver) panel.attach(); }
-    else { if (panel.driver?.running) void panel.toggle(); if (RES?.vol) renderer?.setVolume(RES.vol); cam.tx = undefined; cam.ty = undefined; }
-    need3D = needRadar = true;
-    panel.redrawCharts();
-  }
-  all('[data-mode]').forEach(b => on(b, 'click', () => setMode(b.dataset.mode as 'instant' | 'sim')));
-  all('[data-p]').forEach(b => on(b, 'click', () => {
-    st.prod = b.dataset.p as 'dbz' | 'vel' | 'hail';
-    all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
-    needRadar = true;
   }));
-  /* ---------- simulation radar: a fixed map you scroll and zoom ---------- */
-  const mapView = new MapView();
-  {
-    const rc = $<HTMLCanvasElement>('svRadar');
-    let drag: { x: number; y: number } | null = null, lastT = 0;
-    on(rc, 'pointerdown', e => { if (st.mode !== 'sim') return; drag = { x: e.clientX, y: e.clientY }; rc.setPointerCapture(e.pointerId); rc.style.cursor = 'grabbing'; });
-    on(rc, 'pointermove', e => {
-      if (!drag) return;
-      mapView.pan(e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; needRadar = true;
-    });
-    const end = () => { drag = null; rc.style.cursor = st.mode === 'sim' ? 'grab' : ''; };
-    on(rc, 'pointerup', end); on(rc, 'pointercancel', end);
-    on(rc, 'wheel', e => {
-      if (st.mode !== 'sim') return;
-      e.preventDefault();
-      const r = rc.getBoundingClientRect();
-      mapView.zoom(Math.exp(e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top, r.width, r.height); needRadar = true;
-    }, { passive: false });
-    on(rc, 'dblclick', () => {
-      const fr = panel.frame;
-      if (st.mode !== 'sim' || !fr || !panel.focus) return;
-      const [x, y] = toGround(fr, (panel.focus[0] + fr.g.NX * fr.g.dx / 2000) * 1000, (panel.focus[1] + fr.g.NY * fr.g.dy / 2000) * 1000);
-      mapView.cx = x; mapView.cy = y; needRadar = true;
-    });
-    // a new run starts with a fresh map view
-    const watch = () => { const t = panel.frame?.t ?? 0; if (t < lastT) mapView.reset(); lastT = t; };
-    const iv = window.setInterval(watch, 1000);
-    cleanup.push(() => clearInterval(iv));
-    rc.style.cursor = 'grab';
-  }
-  const lab = $<HTMLInputElement>('svLab');
-  on(lab, 'change', () => { st.labels = lab.checked; needRadar = true; });
 
-  /* ---------- diagnosis and readouts ---------- */
+  /** Environment numbers, sounding and hodograph. S is kept for sending a simulated tornado to the Tornado Lab. */
   function diagnose() {
     E = environment(toEnv(o)); S = storm(E);
     const pc = E.pc;
@@ -175,78 +80,52 @@ export function mountStorm(root: HTMLElement): () => void {
     $('hS6').innerHTML = `${kt(E.shear6)} kt`;
     $('hS3').innerHTML = `${Math.round(E.srh3)}<small>m²/s²</small>`;
     $('hSRA').innerHTML = `${kt(E.srAnvil)} kt`;
-    let ty: string, sub: string;
-    const sra = kt(E.srAnvil);
-    if (!S.forms) {
-      if (S.capped) { ty = 'Capped: no storms'; sub = `The inversion is too strong (CIN ${Math.round(pc.cin)} J/kg) for surface air to break through. A front or dryline might still force a storm, but nothing forms on its own.`; }
-      else { ty = 'No storms'; sub = pc.cape < 150 ? 'Too little instability for deep convection.' : 'The rising air doesn’t get deep enough to build a thunderstorm.'; }
-    } else {
-      const names = { lp: 'LP supercell', classic: 'Classic supercell', hp: 'HP supercell', ordinary: 'Supercell' };
-      const why = {
-        lp: `Strong storm-relative wind aloft (${sra} kt) carries the rain far from the updraft, leaving a sculpted, visible updraft with little rain.`,
-        classic: `Storm-relative wind aloft of ${sra} kt puts heavy rain and hail just ahead of the updraft, with a hook wrapping behind it.`,
-        hp: `Weak storm-relative wind aloft (${sra} kt) lets rain wrap around the mesocyclone. Tornadoes can be hidden in rain.`,
-        ordinary: ''
-      };
-      switch (S.mode) {
-        case 'pulse': ty = 'Pulse storms'; sub = 'Little shear. Each updraft rains back into itself and collapses within an hour: brief heavy rain, small hail, possible downbursts.'; break;
-        case 'multicell': ty = 'Multicell cluster'; sub = 'Moderate shear. New cells keep forming along the outflow edge, but none lasts long enough to rotate.'; break;
-        case 'marginal': ty = 'Marginal supercell'; sub = 'Shear is just enough for transient rotation. Storms cycle between organized and messy.'; break;
-        case 'split': ty = 'Splitting supercells'; sub = `Strong shear with a nearly straight hodograph (0–3 km SRH ${Math.round(E.srh3)}). The storm splits into right- and left-moving supercells of similar strength. Shown: the right-mover.`; break;
-        case 'weak-super': ty = 'Weak supercell'; sub = 'Plenty of shear, but too little instability for a strong updraft. Rotation stays modest.'; break;
-        default: ty = names[S.precip]; sub = why[S.precip];
-      }
-    }
-    $('rType').textContent = ty; $('rTypeSub').textContent = sub;
-    if (S.forms) {
-      $('rW').textContent = `${Math.round(S.w)} m/s · ${mph(S.w)} mph`;
-      $('rWSub').textContent = `Parcel theory gives √(2·CAPE) = ${Math.round(Math.sqrt(2 * pc.cape))} m/s. Entrainment and the weight of rain and hail cut that about in half; rotation adds lift back.`;
-      $('rMid').innerHTML = `${kt(S.vMid)} kt<small>${S.vMid >= 15 ? 'Mesocyclone, 3–6 km' : 'Weak, 3–6 km'}</small>`;
-      $('rLow').innerHTML = `${kt(S.vLow)} kt<small>${S.vLow >= 15 ? 'Strong, near 1 km' : S.vLow >= 9 ? 'Moderate, near 1 km' : 'Weak, near 1 km'}</small>`;
-      const [hn, hs] = hailName(S.hailIn); $('rHail').innerHTML = `${hn}<small>${hs}</small>`;
-      const rm = E.bk.rm; $('rMove').innerHTML = `${mph(Math.hypot(rm[0], rm[1]))} mph<small>Toward the ${compass(rm[0], rm[1])}</small>`;
-    } else {
-      $('rW').textContent = '—'; $('rWSub').textContent = '';
-      for (const id of ['rMid', 'rLow', 'rHail', 'rMove']) $(id).innerHTML = '—';
-    }
-    const pt = S.forms ? S.ptor : 0;
-    $('tPct').textContent = S.forms ? `${Math.round(pt * 100)}%` : '—';
-    $('tHead').textContent = S.forms ? 'Chance this storm produces a tornado' : 'No storm, no tornado';
-    let why: string;
-    if (!S.forms) why = 'No storm forms in this setup.';
-    else if (pt === 0) why = 'Without a rotating updraft, tornadoes are very unlikely. Brief landspouts need different ingredients.';
-    else {
-      const lim: string[] = [];
-      if (pc.lcl > 1500) lim.push(`high cloud base (${Math.round(pc.lcl).toLocaleString()} m) gives a cold, dry rear-flank downdraft`);
-      if (E.srh1 < 100) lim.push(`weak low-level helicity (${Math.round(E.srh1)} m²/s²)`);
-      if (pc.cin < -100) lim.push(`a strong cap (CIN ${Math.round(pc.cin)})`);
-      if (pc.cape < 800) lim.push('limited instability');
-      why = `STP ${E.stp.toFixed(1)}. ` + (lim.length ? 'Held back by ' + lim.join(', ') + '.' : 'Low cloud base, strong low-level helicity and enough instability: a favourable setup.');
-    }
-    $('tWhy').textContent = why;
-    $<HTMLButtonElement>('tTyp').disabled = $<HTMLButtonElement>('tRoll').disabled = !(S.forms && pt > 0);
-    drawEF($<HTMLCanvasElement>('tEF'), S); drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E);
+    drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E);
   }
 
-  /* ---------- tornado buttons ---------- */
-  const rng = mulberry((Date.now() & 0xffff) + 7);
-  function sendTornado(tp: TornadoParams, label: 'typical' | 'roll') {
-    tor = tp;
-    app.link = { params: tp, label, env: { ...o }, stp: E!.stp, ptor: S!.ptor };
-    needRadar = true;
+  /* ---------- views ---------- */
+  function setView(v: '3d' | 'radar') {
+    st.view = v;
+    all('[data-v]').forEach(b => b.setAttribute('aria-pressed', b.dataset.v === v ? 'true' : 'false'));
+    (renderer?.canvas ?? $('svGL')).hidden = v !== '3d'; $('svRadar').hidden = v !== 'radar';
+    $('svProd').style.display = v === 'radar' ? '' : 'none'; $('svSave').style.display = v === '3d' ? '' : 'none';
+    need3D = needRadar = true;
   }
-  on($('tTyp'), 'click', () => {
-    const tp = S && tornadoFrom(S, rng, true);
-    if (!tp) return;
-    sendTornado(tp, 'typical');
-    $('tRes').innerHTML = `The typical tornado here peaks near ${tp.peakMph} mph. <a href="#tornado">Open it in the Tornado Lab →</a>`;
-  });
-  on($('tRoll'), 'click', () => {
-    const tp = S && tornadoFrom(S, rng, false);
-    if (!tp) { tor = null; app.link = null; needRadar = true; $('tRes').textContent = 'This time the storm stayed tornado-free, as most supercells do. Roll again.'; return; }
-    sendTornado(tp, 'roll');
-    $('tRes').innerHTML = `A tornado formed: ${tp.peakMph} mph peak winds, EF${efOf(tp.peakMph)}. <a href="#tornado">Open it in the Tornado Lab →</a>`;
-  });
+  all('[data-v]').forEach(b => on(b, 'click', () => setView(b.dataset.v as '3d' | 'radar')));
+  all('[data-p]').forEach(b => on(b, 'click', () => {
+    st.prod = b.dataset.p as 'dbz' | 'vel' | 'hail';
+    all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+    needRadar = true;
+  }));
+
+  /* ---------- radar: a fixed map you scroll and zoom ---------- */
+  const mapView = new MapView();
+  {
+    const rc = $<HTMLCanvasElement>('svRadar');
+    let drag: { x: number; y: number } | null = null, lastT = 0;
+    on(rc, 'pointerdown', e => { drag = { x: e.clientX, y: e.clientY }; rc.setPointerCapture(e.pointerId); rc.style.cursor = 'grabbing'; });
+    on(rc, 'pointermove', e => {
+      if (!drag) return;
+      mapView.pan(e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; needRadar = true;
+    });
+    const end = () => { drag = null; rc.style.cursor = 'grab'; };
+    on(rc, 'pointerup', end); on(rc, 'pointercancel', end);
+    on(rc, 'wheel', e => {
+      e.preventDefault();
+      const r = rc.getBoundingClientRect();
+      mapView.zoom(Math.exp(e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top, r.width, r.height); needRadar = true;
+    }, { passive: false });
+    on(rc, 'dblclick', () => {
+      const fr = panel.frame;
+      if (!fr || !panel.focus) return;
+      const [x, y] = toGround(fr, (panel.focus[0] + fr.g.NX * fr.g.dx / 2000) * 1000, (panel.focus[1] + fr.g.NY * fr.g.dy / 2000) * 1000);
+      mapView.cx = x; mapView.cy = y; needRadar = true;
+    });
+    // a new run starts with a fresh map view
+    const iv = window.setInterval(() => { const t = panel.frame?.t ?? 0; if (t < lastT) mapView.reset(); lastT = t; }, 1000);
+    cleanup.push(() => clearInterval(iv));
+    rc.style.cursor = 'grab';
+  }
 
   /* ---------- chaser view ---------- */
   const cam: Camera = { az: -72, dist: 40, h: 2.5, tz: 5 };
@@ -273,8 +152,8 @@ export function mountStorm(root: HTMLElement): () => void {
         // move the look-at point across the ground: sideways with the mouse, toward or away with up/down
         const az = cam.az * Math.PI / 180, k = cam.dist * 0.0025;
         const fx = -Math.cos(az), fy = -Math.sin(az), rx = -Math.sin(az), ry = Math.cos(az);
-        cam.tx = clamp(drag.tx - rx * dx * k + fx * dy * k, -60, 60);
-        cam.ty = clamp(drag.ty - ry * dx * k + fy * dy * k, -60, 60);
+        cam.tx = clamp(drag.tx - rx * dx * k + fx * dy * k, -300, 300);
+        cam.ty = clamp(drag.ty - ry * dx * k + fy * dy * k, -300, 300);
       } else {
         cam.az = drag.az - dx * 0.3;
         cam.h = clamp(drag.h + dy * 0.08, 0.3, 40);
@@ -285,21 +164,21 @@ export function mountStorm(root: HTMLElement): () => void {
     const end = () => { drag = null; c.style.cursor = 'grab'; settleView(); };
     on(c, 'pointerup', end); on(c, 'pointercancel', end);
     on(c, 'wheel', e => { e.preventDefault(); cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.001), 16, 110); need3D = true; moving = true; settleView(); }, { passive: false });
-    // double-click: jump to the simulated storm's main updraft
+    // double-click: jump to the storm's main updraft
     on(c, 'dblclick', () => {
       const d = panel.driver;
-      if (st.mode === 'sim' && panel.focus && d) { cam.tx = panel.focus[0] + d.base.cu * d.t / 1000; cam.ty = panel.focus[1] + d.base.cv * d.t / 1000; need3D = true; }
+      if (panel.focus && d) { cam.tx = panel.focus[0] + d.base.cu * d.t / 1000; cam.ty = panel.focus[1] + d.base.cv * d.t / 1000; need3D = true; }
     });
   }
   /**
-   * The camera as the renderer needs it. In the simulation the viewer's camera lives in ground coordinates while
-   * the model runs in a frame moving with the storm, so the storm drives across the fields; with "Move with the
-   * storm" on, the camera travels along with it.
+   * The camera as the renderer needs it. The viewer's camera lives in ground coordinates while the model runs in a
+   * frame moving with the storm, so the storm drives across the fields; with "Move with the storm" on, the camera
+   * travels along with it.
    */
   let lastG: [number, number] | null = null, lastT = 0;
   function viewCam(): Camera {
     const d = panel.driver;
-    if (st.mode !== 'sim' || !d) { lastG = null; return cam; }
+    if (!d) { lastG = null; lastT = 0; return { ...cam, tx: cam.tx ?? -5, ty: cam.ty ?? 0 }; }
     if (d.t < lastT) { cam.tx = cam.ty = undefined; lastG = null; }    // a restarted run: aim at the new storm
     lastT = d.t;
     const gx = d.base.cu * d.t / 1000, gy = d.base.cv * d.t / 1000;
@@ -311,24 +190,15 @@ export function mountStorm(root: HTMLElement): () => void {
   function draw3D() {
     const tag = $('svTagL');
     if (!renderer) { tag.textContent = 'Starting the renderer…'; return; }
-    if (st.mode === 'sim' && panel.driver) {
-      const az = cam.az * Math.PI / 180;
-      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, right-drag to pan, double-click to find the storm`;
-      if (!captureOnly) renderer.render(viewCam(), moving ? 0.5 : undefined);
-      return;
-    }
-    if (st.mode === 'sim') tag.textContent = 'Press Run to grow this storm from scratch in the cloud model. Shown until then: the instant model.';
-    else if (S && !S.forms) tag.textContent = 'Clear skies: no storm in this environment';
-    else if (!RES?.vol) { tag.textContent = 'Building the storm…'; return; }
-    else if (st.mode === 'instant') {
-      const az = cam.az * Math.PI / 180;
-      tag.textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} from ${Math.round(cam.dist)} km · ${cam.h < 1 ? 'ground level' : Math.round(cam.h) + ' km up'} · drag to orbit, right-drag to pan, scroll to zoom`;
-    }
-    if (!captureOnly) renderer.render(cam, moving ? 0.5 : undefined);
+    const az = cam.az * Math.PI / 180, look = `looking ${compass(-Math.cos(az), -Math.sin(az))}`;
+    tag.textContent = panel.driver
+      ? `${Math.round(panel.driver.t / 60)} min · ${look} · drag to orbit, right-drag to pan, double-click to find the storm`
+      : `${PRESETS[st.preset].name} · ${look}`;
+    if (!captureOnly) renderer.render(viewCam(), moving ? 0.5 : undefined);
   }
 
   async function captureImage(W: number, H: number): Promise<ImageData | null> {
-    return renderer && (RES?.vol || panel.driver) ? renderer.capture(viewCam(), W, H) : null;
+    return renderer ? renderer.capture(viewCam(), W, H) : null;
   }
   on($('svSave'), 'click', async () => {
     const img = await captureImage(1920, 1200);
@@ -336,7 +206,7 @@ export function mountStorm(root: HTMLElement): () => void {
     const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
     c.getContext('2d')!.putImageData(img, 0, 0);
     const a = document.createElement('a');
-    a.download = `supercell-${(S?.precip ?? 'storm')}-${Date.now()}.png`; a.href = c.toDataURL('image/png'); a.click();
+    a.download = `stormlab-${st.preset}-${Math.round((panel.driver?.t ?? 0) / 60)}min.png`; a.href = c.toDataURL('image/png'); a.click();
   });
   // hook for automated tests: render a frame offscreen
   (window as unknown as { __stormlab?: unknown }).__stormlab = {
@@ -350,39 +220,35 @@ export function mountStorm(root: HTMLElement): () => void {
   function loop(now: number) {
     if (!alive) return;
     const wallDt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000)); lastFrame = now;
-    if (st.mode === 'sim') panel.tick(wallDt);
-    $('svTagR').textContent = busy && st.mode === 'instant' ? 'Computing…' : (S && S.forms && E ? `CAPE ${Math.round(E.pc.cape).toLocaleString()} · 0–6 km shear ${kt(E.shear6)} kt · STP ${E.stp.toFixed(1)}` : '');
+    panel.tick(wallDt);
+    $('svStart').hidden = !!panel.driver;
+    $('svTagR').textContent = E ? `CAPE ${Math.round(E.pc.cape).toLocaleString()} · 0–6 km shear ${kt(E.shear6)} kt · STP ${E.stp.toFixed(1)}` : '';
     if (st.view === '3d' && need3D) { draw3D(); need3D = false; }
     if (st.view === 'radar' && needRadar) {
-      $('svTagL').textContent = st.mode === 'sim'
+      $('svTagL').textContent = panel.frame
         ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [], panel.swath, mapView)
-        : drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, { ...st, prod: st.prod === 'hail' ? 'dbz' : st.prod });
+        : (drawSimRadar($<HTMLCanvasElement>('svRadar'), null, st.prod, null, [], null, mapView), 'Radar · press Grow the storm to start');
       needRadar = false;
     }
     requestAnimationFrame(loop);
   }
-  const redraw = () => { if (E && S) { drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E); drawEF($<HTMLCanvasElement>('tEF'), S); } panel.redrawCharts(); };
+  const redraw = () => { if (E) { drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E); } panel.redrawCharts(); };
   const ro = new ResizeObserver(() => { need3D = needRadar = true; redraw(); });
   ro.observe(root); cleanup.push(() => ro.disconnect());
   cleanup.push(onThemeChange(redraw));
 
   selectPreset(st.preset);
-  app.env = { ...o };
-  lab.checked = st.labels;
   all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === st.prod ? 'true' : 'false'));
   setView(st.view);
-  diagnose();
-  setMode(st.mode);
-  if (app.link && (Object.keys(o) as (keyof EnvSliders)[]).every(k => app.link!.env[k] === o[k])) tor = app.link.params;
   requestAnimationFrame(loop);
 
   createChaserRenderer($<HTMLCanvasElement>('svGL')).then(r => {
     if (!alive) { r?.destroy(); return; }
     renderer = r;
     $('svGpu').textContent = r ? (r.kind === 'webgpu' ? 'Rendering with WebGPU' : 'Rendering with WebGL2') : 'No 3-D graphics available';
-    if (r) { bindOrbit(r.canvas); r.canvas.hidden = st.view !== '3d'; }
-    request(fullOpt());
+    if (r) { bindOrbit(r.canvas); r.canvas.hidden = st.view !== '3d'; if (!panel.driver) r.setVolume(emptyVolume(r.needsCpuLighting)); }
+    need3D = true;
   });
 
-  return () => { alive = false; clearTimeout(settleT); cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); renderer?.destroy(); };
+  return () => { alive = false; cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); renderer?.destroy(); };
 }

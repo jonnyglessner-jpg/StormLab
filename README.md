@@ -2,8 +2,9 @@
 
 An interactive supercell and tornado simulator for weather education. Pick one of seven severe-weather setups
 (`src/presets.ts`): a Plains tornado outbreak, a big hail day, Dixie Alley HP, Ohio Valley spring, High Plains LP,
-a capped bust day and a summer pulse storm. Then watch the storm it supports. You see the sounding, hodograph, storm type, radar reflectivity and velocity, and a 3-D
-chaser view. Any tornado the storm produces opens in a swirl-ratio vortex model.
+a capped bust day and a summer pulse storm. Then grow the storm in a 3-D cloud model and watch it from the ground
+(chaser view) or on a radar map, with the setup's sounding and hodograph. Any tornado the storm produces opens in a
+swirl-ratio vortex model.
 
 Everything runs in the browser. The 3-D view renders with **WebGPU** where available and falls back to WebGL2.
 
@@ -22,22 +23,15 @@ Pushing to `main` runs the same checks on GitHub and deploys `dist/` to GitHub P
 
 | Layer | Where | What it does |
 | --- | --- | --- |
-| Environment | `src/physics/thermo.ts`, `winds.ts`, `environment.ts` | Afternoon sounding (mixed layer, cap, lapse rates), mixed-layer parcel with virtual temperature, hodograph, Bunkers storm motion, SRH, SCP, STP |
-| Storm | `src/physics/storm.ts` | Updraft, storm mode from shear, mesocyclone strength from √SRH, LP/classic/HP from storm-relative anvil wind, hail size, tornado odds and EF distribution from STP |
-| Storm flow | `src/physics/flow.ts` | Analytic storm-relative flow: environment, flow around the updraft, anelastic updraft inflow/outflow, mesocyclone, rear-flank downdraft and outflow |
-| Radar & cloud | `src/physics/trajectories.ts`, `volume.ts` | Thousands of rain/snow/hail trajectories make the reflectivity (hook, inflow notch, forward-flank core) and the precipitation/anvil part of the cloud volume |
-| Rendering | `src/render/chaser-webgpu.ts` | WGSL compute pass lights the volume (sun and sky), render pass ray-marches it; `chaser-webgl.ts` is the fallback |
-| Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, swirl-ratio regimes, corner flow, suction vortices, condensation funnel, damage swath |
+| Environment | `src/physics/thermo.ts`, `winds.ts`, `environment.ts` | Afternoon sounding (mixed layer, moist layer, cap, lapse rates), mixed-layer parcel with virtual temperature, hodograph, Bunkers storm motion, SRH, SCP, STP |
+| Setups | `src/presets.ts` | The seven environments and what each one shows |
+| Cloud model | `src/sim/` | See below |
+| Rendering | `src/render/chaser-webgpu.ts` | WGSL compute pass lights the volume (sun and sky), render pass ray-marches it over a ground of fields and section roads; `chaser-webgl.ts` is the fallback |
+| Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, swirl-ratio regimes, corner flow, suction vortices, condensation funnel, damage swath. `src/physics/storm.ts` turns a simulated tornado into its parameters |
 
-The physics runs in a Web Worker (`src/workers/storm.worker.ts`), so the page stays responsive.
+## The cloud model
 
-Each page has a "Limits" section. The instant model is a steady diagnostic model whose tornado odds are
-climatological, scaled from SPC studies (Thompson et al. 2003/2012, Smith et al. 2015). The full simulation below
-is the time-stepping alternative.
-
-## Full simulation (cloud model)
-
-**Full simulation** mode grows the storm in a 3-D cloud model, the same kind of model research groups use
+The storm grows in a 3-D cloud model, the same kind of model research groups use
 (CM1, WRF), simplified enough to run in a browser:
 
 | Piece | Where | Details |
@@ -110,10 +104,10 @@ estimate scaled from that circulation.
 
 ## Tests
 
-`npm test` runs the physics tests in Node, for both models:
-- **Instant model:** checks against reference values and expected behaviour. These include Bolton saturation
-  pressure, the LCL rule, Bunkers deviation, zero helicity for a straight hodograph, the setup storm types, tornado
-  frequency over many rolls, and radar structure (the hook is stronger than the inflow notch).
+`npm test` runs the physics tests in Node:
+- **Environment:** checks against reference values and expected behaviour. These include Bolton saturation
+  pressure, the LCL rule, moisture depth, Bunkers deviation, zero helicity for a straight hodograph, the setups'
+  storm types, and the tornado parameters a simulated tornado is given.
 - **Cloud model:** a calm atmosphere stays at rest, a uniform wind is carried unchanged, mass is conserved, a warm
   bubble rises, a moist sounding makes a storm with rain, an ice anvil and hail at the ground, a capped one stays
   quiet, microphysics conserves water and energy, fall speeds, reflectivity and hail sizes are realistic, the hail

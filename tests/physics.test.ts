@@ -1,6 +1,5 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { compute } from '../src/physics/compute';
 import { environment } from '../src/physics/environment';
 import { mulberry } from '../src/physics/random';
 import { efDist, storm, tornadoFrom } from '../src/physics/storm';
@@ -116,28 +115,5 @@ describe('storm diagnosis', () => {
     let n = 0; const N = 4000;
     for (let i = 0; i < N; i++) if (tornadoFrom(S, r, false)) n++;
     within(n / N, S.ptor - 0.03, S.ptor + 0.03, 'tornado frequency');
-  });
-});
-
-describe('radar and cloud fields', () => {
-  test('a classic supercell has a strong core, a hook and a weak-echo inflow notch', () => {
-    const r = compute(toEnv(PRESETS.plains), { nRel: 2000, volume: false, cpuLighting: false });
-    const { N, R, dx } = r.geo, at = (x: number, y: number) => r.dbz[Math.floor((y + R) / dx) * N + Math.floor((x + R) / dx)];
-    let mx = -99; for (const v of r.dbz) mx = Math.max(mx, v);
-    within(mx, 50, 70, 'max reflectivity');
-    assert.ok(at(r.geo.mesoX, r.geo.mesoY) > at(0, 0) + 10, 'hook should be stronger than the updraft notch');
-    assert.ok(r.geo.core && r.geo.core[2] > 40, 'forward-flank core');
-  });
-  test('the cloud volume has a tower and stays clear far upstream', () => {
-    const r = compute(toEnv(PRESETS.ohio), { nRel: 1200, volume: true, cpuLighting: true });
-    const v = r.vol!, k = Math.floor(6000 / v.dzv), c = v.NV / 2;
-    assert.ok(v.beta[(k * v.NV + c) * v.NV + c] > 5, 'updraft tower at 6 km');
-    assert.ok(v.beta[(k * v.NV + c) * v.NV + 2] < 0.5, 'clear air 55 km west');
-    assert.equal(v.lit!.length, v.NV * v.NV * v.NZv * 4);
-  });
-  test('no storm, no echo', () => {
-    const r = compute(toEnv(PRESETS.capped), { nRel: 500, volume: false, cpuLighting: false });
-    let mx = -99; for (const v of r.dbz) mx = Math.max(mx, v);
-    assert.equal(mx, -99);
   });
 });

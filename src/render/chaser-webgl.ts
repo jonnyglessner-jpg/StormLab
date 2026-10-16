@@ -1,6 +1,5 @@
 /** WebGL2 fallback for the chaser view. Same ray march; the lighting arrives precomputed from the worker. */
-import { type VolumeData } from '../physics/compute';
-import { BMAX } from '../physics/volume';
+import { BMAX, type VolumeData } from '../physics/volume';
 import { cameraBasis, SUN_DIR, type Camera, type ChaserRenderer } from './chaser';
 import { cloudNoise } from './noise';
 

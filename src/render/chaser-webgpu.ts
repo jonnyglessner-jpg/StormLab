@@ -4,8 +4,7 @@
  *    marched through the density texture for every voxel.
  * 2. A render pass ray-marches the volume from the camera, with tiling noise for sub-grid billows.
  */
-import { type VolumeData } from '../physics/compute';
-import { BMAX } from '../physics/volume';
+import { BMAX, type VolumeData } from '../physics/volume';
 import { cameraBasis, SUN_DIR, type Camera, type ChaserRenderer } from './chaser';
 import { getGPU } from './gpu-device';
 import { cloudNoise } from './noise';

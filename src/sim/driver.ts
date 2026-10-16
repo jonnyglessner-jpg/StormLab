@@ -3,7 +3,7 @@
  * (2 km grid). Paces the model against the wall clock, keeps the renderer's volume current, and publishes
  * diagnostics.
  */
-import { type VolumeData } from '../physics/compute';
+import { type VolumeData } from '../physics/volume';
 import { type Environment } from '../physics/environment';
 import { type ChaserRenderer } from '../render/chaser';
 import { getGPU } from '../render/gpu-device';

@@ -120,3 +120,8 @@ code{font-family:var(--f-mono);font-size:12.5px}
 .gpu-note{font-family:var(--f-mono);font-size:11px;color:var(--muted)}
 .site-foot{max-width:1280px;margin:28px auto 8px;padding-top:12px;border-top:1px solid var(--line);font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between}
 .site-foot a{color:var(--accent)}
+
+.startover{position:absolute;inset:0;display:grid;place-content:center;justify-items:center;gap:10px;text-align:center;padding:16px}
+.startover button{font-family:var(--f-display);font-size:18px;font-weight:600;padding:12px 26px;border-radius:10px;background:var(--accent);border-color:var(--accent);color:var(--panel);box-shadow:0 6px 24px rgba(0,0,0,.25)}
+.startover p{margin:0;max-width:36ch;font-size:13.5px;color:#f3efe4;background:rgba(18,24,26,.6);padding:6px 10px;border-radius:6px}
+.startover[hidden]{display:none}

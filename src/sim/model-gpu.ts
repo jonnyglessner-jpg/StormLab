@@ -163,7 +163,7 @@ export class SimGPU {
 
   /** Write cloud and rain into densTex. */
   pack(): void {
-    if (!this.packPass) return;
+    if (this.dead || !this.packPass) return;
     const g = this.g, enc = this.device.createCommandEncoder(), pass = enc.beginComputePass();
     pass.setPipeline(this.packPass.pipe); pass.setBindGroup(0, this.packPass.bind);
     pass.dispatchWorkgroups(Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), Math.ceil(g.NZ / 4)); pass.end();
@@ -172,7 +172,7 @@ export class SimGPU {
 
   /** Compute and read back the per-column diagnostics. Returns null if a read is already in flight. */
   async readDiag(): Promise<Float32Array | null> {
-    if (!this.diagPasses.length || !this.diag || !this.diagStage || this.diagBusy) return null;
+    if (this.dead || !this.diagPasses.length || !this.diag || !this.diagStage || this.diagBusy) return null;
     this.diagBusy = true;
     const g = this.g, enc = this.device.createCommandEncoder(), pass = enc.beginComputePass();
     for (const q of this.diagPasses) { pass.setPipeline(q.pipe); pass.setBindGroup(0, q.bind); pass.dispatchWorkgroups(Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), 1); }
@@ -181,14 +181,16 @@ export class SimGPU {
     this.device.queue.submit([enc.finish()]);
     try {
       await this.diagStage.mapAsync(GPUMapMode.READ);
+      if (this.dead) return null;
       const out = new Float32Array(this.diagStage.getMappedRange().slice(0));
       this.diagStage.unmap();
       return out;
-    } finally { this.diagBusy = false; }
+    } catch { return null; } finally { this.diagBusy = false; }
   }
 
   /** Encode n time steps into one command buffer and submit. Nudging is evaluated at the start of the batch. */
   step(n = 1): void {
+    if (this.dead) return;
     this.writeNudge();
     const enc = this.device.createCommandEncoder();
     for (let s = 0; s < n; s++) {
@@ -238,7 +240,16 @@ export class SimGPU {
     return { u, v, w, th, qv, qc, qr, qi, qs, qh, phi, rain: acc.slice(0, plane), hail: acc.slice(plane, 2 * plane) };
   }
 
+  /** true once destroy() has been called: no more steps, packs or readbacks */
+  dead = false;
+  /** Free the GPU memory once the work already queued has finished (a readback may still be in flight). */
   destroy(): void {
+    if (this.dead) return;
+    this.dead = true;
+    const free = () => this.free();
+    this.device.queue.onSubmittedWorkDone().then(() => setTimeout(free, 0), free);
+  }
+  private free(): void {
     for (const r of [this.A, this.B]) for (const k of FIELDS) r[k].destroy();
     for (const b of [this.phi, this.div, this.tmp, this.dep, this.clk, this.acc, this.base, this.uP, this.uN]) b.destroy();
     this.densTex?.destroy(); this.diag?.destroy(); this.diagStage?.destroy();

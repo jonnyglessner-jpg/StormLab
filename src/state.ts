@@ -11,7 +11,7 @@ export interface TornadoLink {
   ptor: number;
 }
 
-export interface StormViewState { view: '3d' | 'radar'; prod: 'dbz' | 'vel' | 'hail'; labels: boolean; mode: 'instant' | 'sim'; preset: string }
+export interface StormViewState { view: '3d' | 'radar'; prod: 'dbz' | 'vel' | 'hail'; preset: string }
 
 export const app: {
   link: TornadoLink | null;
@@ -20,5 +20,5 @@ export const app: {
 } = {
   link: null,
   env: null,
-  stormView: { view: '3d', prod: 'dbz', labels: true, mode: 'instant', preset: 'plains' }
+  stormView: { view: '3d', prod: 'dbz', preset: 'plains' }
 };

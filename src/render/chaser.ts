@@ -1,5 +1,5 @@
 /** Chaser view: ray-marched cloud volume. WebGPU when available, WebGL2 otherwise. */
-import { type VolumeData } from '../physics/compute';
+import { type VolumeData } from '../physics/volume';
 import { createWebGLRenderer } from './chaser-webgl';
 import { createWebGPURenderer } from './chaser-webgpu';
 

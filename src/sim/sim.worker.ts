@@ -1,5 +1,5 @@
 /** CPU fallback: runs the reference cloud model off the main thread and returns diagnostics and lit volumes. */
-import { type VolumeData } from '../physics/compute';
+import { type VolumeData } from '../physics/volume';
 import { environment, type EnvInput } from '../physics/environment';
 import { lightVolumeCPU } from '../physics/volume';
 import { baseFromEnvironment } from './base';
