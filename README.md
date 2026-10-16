@@ -1,7 +1,8 @@
 # StormLab: Supercell Lab
 
-An interactive supercell and tornado simulator for weather education. Set the atmosphere with eight sliders and
-watch the storm it supports. You see the sounding, hodograph, storm type, radar reflectivity and velocity, and a 3-D
+An interactive supercell and tornado simulator for weather education. Pick one of seven severe-weather setups
+(`src/presets.ts`): a Plains tornado outbreak, a big hail day, Dixie Alley HP, Ohio Valley spring, High Plains LP,
+a capped bust day and a summer pulse storm. Then watch the storm it supports. You see the sounding, hodograph, storm type, radar reflectivity and velocity, and a 3-D
 chaser view. Any tornado the storm produces opens in a swirl-ratio vortex model.
 
 Everything runs in the browser. The 3-D view renders with **WebGPU** where available and falls back to WebGL2.
@@ -28,7 +29,7 @@ Pushing to `main` runs the same checks on GitHub and deploys `dist/` to GitHub P
 | Rendering | `src/render/chaser-webgpu.ts` | WGSL compute pass lights the volume (sun and sky), render pass ray-marches it; `chaser-webgl.ts` is the fallback |
 | Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, swirl-ratio regimes, corner flow, suction vortices, condensation funnel, damage swath |
 
-The physics runs in a Web Worker (`src/workers/storm.worker.ts`), so the sliders stay responsive.
+The physics runs in a Web Worker (`src/workers/storm.worker.ts`), so the page stays responsive.
 
 Each page has a "Limits" section. The instant model is a steady diagnostic model whose tornado odds are
 climatological, scaled from SPC studies (Thompson et al. 2003/2012, Smith et al. 2015). The full simulation below
@@ -41,13 +42,13 @@ is the time-stepping alternative.
 
 | Piece | Where | Details |
 | --- | --- | --- |
-| Equations | `src/sim/model-cpu.ts` | Anelastic, on a staggered (Arakawa C) grid, in a frame moving with the Bunkers right-mover |
+| Equations | `src/sim/model-cpu.ts` | Anelastic, on a staggered (Arakawa C) grid, in a frame moving with the Bunkers right-mover; the 3-D view puts it back on the ground, so the storm drives across a one-mile grid of section roads |
 | Advection | | Semi-Lagrangian with MacCormack correction and a min/max limiter; departure points computed once per grid layout and shared by every field on it |
 | Microphysics | `src/sim/micro.ts` | Six classes: vapour, cloud water, rain, cloud ice, snow and hail. Kessler autoconversion and accretion; ice, snow and hail processes after Lin, Farley & Orville (1983) and Gilmore et al. (2004); mixed-phase saturation adjustment after Tao et al. (1989); rain, snow and hail fall at their own speeds |
 | Mixing | | Vertical eddy diffusion plus a 4th-order horizontal filter against 2-gridpoint noise |
 | Pressure | | Projection onto div(ρ₀u) = 0, solved by red-black vertical-line relaxation |
 | Boundaries | | Lateral sponge, Rayleigh damping above 12 km, free-slip ground |
-| Start | | Updraft nudging for 15 min (Naylor & Gilmore 2012, as in CM1) |
+| Start | `src/sim/start.ts` | A field of cumulus: a main forced updraft about 12 km across ringed by six smaller towers, switched on over the first 6 minutes and released by 18 (updraft nudging as in CM1, Naylor & Gilmore 2012), plus 0.1 K noise in the boundary layer. The cumulus sit under the cap until the main tower breaks through at about 12–15 minutes |
 | GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m, or an optional 160 × 160 × 40 grid at 500 m (about 6× the work) |
 | Fallback | `src/sim/sim.worker.ts` | CPU reference in a worker on a coarser grid when WebGPU is missing |
 | Output | `src/sim/diag.ts` | Radar reflectivity (rain, snow and hail) and velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
@@ -83,7 +84,7 @@ So the storm was starved by the layer just above the moist boundary layer: the P
 about 1.1 km deep, with 50–60% humidity from there to 3 km, and the storm feeds on air from the lowest 3 km. Grid
 spacing, mixing, the domain and the microphysics don't change the outcome.
 
-The **moisture depth** slider now sets how far humid air extends above cloud base before the cap. Deeper moisture
+Each setup's sounding now has a **moisture depth**: how far humid air extends above cloud base before the cap. Deeper moisture
 also weakens the cap (the Plains CIN goes from −53 J/kg with none to −4 J/kg at 3,000 ft). Plains storms (peak
 updraft at 50 / 60 / 70 min, 1 km grid):
 
@@ -93,7 +94,10 @@ updraft at 50 / 60 / 70 min, 1 km grid):
 | 2,000 ft | 36 m/s | 22 m/s | 9 m/s |
 | 4,000 ft (preset default) | 41 m/s | 42 m/s | 32 m/s |
 
-The presets now carry moisture depths: Plains and Dixie 4,000 ft, Ohio Valley 3,000 ft, the summer pulse 1,500 ft,
+These runs used a single 20 km forced updraft. With the cumulus-field start the Plains storm runs a little weaker
+(37 m/s at 50 min, 27 m/s at 60).
+
+The setups carry moisture depths: Plains and Dixie 4,000 ft, Ohio Valley 3,000 ft, the summer pulse 1,500 ft,
 and none for the High Plains LP and the capped case. Ohio Valley and Dixie storms last longer than before but still
 fade after about 50–55 minutes.
 

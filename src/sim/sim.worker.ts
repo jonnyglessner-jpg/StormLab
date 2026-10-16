@@ -8,6 +8,7 @@ import { COARSE_GRID } from './grid';
 import { MP } from './micro';
 import { SimCPU } from './model-cpu';
 import { type Nudge } from './params';
+import { START_NOISE } from './start';
 
 export type SimWorkerIn =
   | { type: 'init'; env: EnvInput; nudge: Nudge }
@@ -23,7 +24,8 @@ scope.onmessage = (e) => {
   if (m.type === 'init') {
     const g = COARSE_GRID;
     sim = new SimCPU(g, baseFromEnvironment(g, environment(m.env)), { dt: 10 });
-    sim.nudgeCfg = { ...m.nudge, tau: 10 };
+    sim.addNoise(START_NOISE.amp, START_NOISE.zTop, START_NOISE.seed);
+    sim.nudgeCfg = m.nudge;
     return;
   }
   if (!sim) return;

@@ -14,7 +14,10 @@ export interface Camera {
   tz: number;
   /** horizontal position it looks at, km from the volume's centre (default: the instant model's storm) */
   tx?: number; ty?: number;
+  /** how far the volume has moved over the ground, km (the simulation runs in a frame moving with the storm) */
+  gx?: number; gy?: number;
 }
+
 
 export interface ChaserRenderer {
   readonly kind: 'webgpu' | 'webgl2';

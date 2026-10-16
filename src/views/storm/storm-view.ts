@@ -1,10 +1,10 @@
-/** Storm view: environment sliders -> sounding, hodograph, storm, radar, chaser view and tornado outlook. */
+/** Storm view: setup -> sounding, hodograph, storm, radar, chaser view and tornado outlook. */
 import { clamp, FT, KT, MPH } from '../../physics/constants';
 import { type ComputeOptions, type ComputeResult } from '../../physics/compute';
 import { environment, type Environment } from '../../physics/environment';
 import { mulberry } from '../../physics/random';
 import { storm, tornadoFrom, type StormDiag, type TornadoParams } from '../../physics/storm';
-import { PRESETS, type EnvSliders } from '../../presets';
+import { envOf, PRESETS, type EnvSliders } from '../../presets';
 import { createChaserRenderer, TARGET, type Camera, type ChaserRenderer } from '../../render/chaser';
 import { app } from '../../state';
 import { onThemeChange } from '../../ui/canvas';
@@ -16,7 +16,7 @@ import { drawRadar } from './radar';
 import { drawSkewT } from './skewt';
 import { SimPanel } from './sim-panel';
 import { drawSimRadar } from './sim-radar';
-import { SLIDERS, STORM_HTML } from './template';
+import { STORM_HTML } from './template';
 
 const EFT = [65, 86, 111, 136, 166, 201];
 const efOf = (m: number) => { let k = 0; for (let i = 0; i < 6; i++) if (m >= EFT[i]) k = i; return k; };
@@ -42,8 +42,8 @@ export function mountStorm(root: HTMLElement): () => void {
   };
 
   const st = app.stormView;
-  const { name: _n, ...plains } = PRESETS.plains; void _n;
-  const o: EnvSliders = { ...(app.env ?? plains) };
+  if (!PRESETS[st.preset]) st.preset = 'plains';
+  const o: EnvSliders = envOf(PRESETS[st.preset]);
   let E: Environment | null = null, S: StormDiag | null = null, RES: ComputeResult | null = null, tor: TornadoParams | null = null;
   let renderer: ChaserRenderer | null = null, need3D = true, needRadar = true;
 
@@ -72,9 +72,6 @@ export function mountStorm(root: HTMLElement): () => void {
   }
 
   /* ---------- controls ---------- */
-  function syncInputs() {
-    for (const s of SLIDERS) { $<HTMLInputElement>('e_' + s.k).value = String(o[s.k]); $('o_' + s.k).textContent = s.fmt(o[s.k]); }
-  }
   let settleT = 0;
   function changed(full: boolean) {
     app.env = { ...o };
@@ -85,21 +82,16 @@ export function mountStorm(root: HTMLElement): () => void {
     if (full) request(fullOpt());
     else { request({ volume: false, nRel: 900, cpuLighting: false }); settleT = window.setTimeout(() => request(fullOpt()), 350); }
   }
-  for (const s of SLIDERS) {
-    const inp = $<HTMLInputElement>('e_' + s.k);
-    on(inp, 'input', () => {
-      o[s.k] = +inp.value;
-      if (o.TdF > o.T0F) { o.TdF = o.T0F; $<HTMLInputElement>('e_TdF').value = String(o.TdF); $('o_TdF').textContent = `${o.TdF} °F`; }
-      $('o_' + s.k).textContent = s.fmt(o[s.k]);
-      all('[data-pre]').forEach(b => b.setAttribute('aria-pressed', 'false'));
-      changed(false);
-    });
+  /** Select a setup: its environment, its card and its description. */
+  function selectPreset(key: string) {
+    st.preset = key;
+    Object.assign(o, envOf(PRESETS[key]));
+    all('[data-pre]').forEach(x => x.setAttribute('aria-pressed', x.dataset.pre === key ? 'true' : 'false'));
+    $('pName').textContent = PRESETS[key].name; $('pWatch').textContent = PRESETS[key].watch;
   }
   all('[data-pre]').forEach(b => on(b, 'click', () => {
-    const { name: _x, ...p } = PRESETS[b.dataset.pre!]; void _x;
-    Object.assign(o, p);
-    all('[data-pre]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
-    syncInputs(); changed(true);
+    if (b.dataset.pre === st.preset) return;
+    selectPreset(b.dataset.pre!); changed(true);
   }));
   function setView(v: '3d' | 'radar') {
     st.view = v;
@@ -191,7 +183,7 @@ export function mountStorm(root: HTMLElement): () => void {
     $('tPct').textContent = S.forms ? `${Math.round(pt * 100)}%` : '—';
     $('tHead').textContent = S.forms ? 'Chance this storm produces a tornado' : 'No storm, no tornado';
     let why: string;
-    if (!S.forms) why = 'Change the environment until a storm forms.';
+    if (!S.forms) why = 'No storm forms in this setup.';
     else if (pt === 0) why = 'Without a rotating updraft, tornadoes are very unlikely. Brief landspouts need different ingredients.';
     else {
       const lim: string[] = [];
@@ -264,17 +256,35 @@ export function mountStorm(root: HTMLElement): () => void {
     on(c, 'pointerup', end); on(c, 'pointercancel', end);
     on(c, 'wheel', e => { e.preventDefault(); cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.001), 16, 110); need3D = true; moving = true; settleView(); }, { passive: false });
     // double-click: jump to the simulated storm's main updraft
-    on(c, 'dblclick', () => { if (st.mode === 'sim' && panel.focus) { cam.tx = panel.focus[0]; cam.ty = panel.focus[1]; need3D = true; } });
+    on(c, 'dblclick', () => {
+      const d = panel.driver;
+      if (st.mode === 'sim' && panel.focus && d) { cam.tx = panel.focus[0] + d.base.cu * d.t / 1000; cam.ty = panel.focus[1] + d.base.cv * d.t / 1000; need3D = true; }
+    });
+  }
+  /**
+   * The camera as the renderer needs it. In the simulation the viewer's camera lives in ground coordinates while
+   * the model runs in a frame moving with the storm, so the storm drives across the fields; with "Move with the
+   * storm" on, the camera travels along with it.
+   */
+  let lastG: [number, number] | null = null, lastT = 0;
+  function viewCam(): Camera {
+    const d = panel.driver;
+    if (st.mode !== 'sim' || !d) { lastG = null; return cam; }
+    if (d.t < lastT) { cam.tx = cam.ty = undefined; lastG = null; }    // a restarted run: aim at the new storm
+    lastT = d.t;
+    const gx = d.base.cu * d.t / 1000, gy = d.base.cv * d.t / 1000;
+    if (cam.tx === undefined || cam.ty === undefined) { cam.tx = -5 + gx; cam.ty = gy; }
+    if (lastG && $<HTMLInputElement>('simFollow').checked) { cam.tx += gx - lastG[0]; cam.ty += gy - lastG[1]; }
+    lastG = [gx, gy];
+    return { ...cam, tx: cam.tx - gx, ty: cam.ty - gy, gx, gy };
   }
   function draw3D() {
     const tag = $('svTagL');
     if (!renderer) { tag.textContent = 'Starting the renderer…'; return; }
     if (st.mode === 'sim' && panel.driver) {
-      // free look: the camera stays where the viewer puts it (it starts aimed at the forced updraft)
-      if (cam.tx === undefined || cam.ty === undefined) { cam.tx = -5; cam.ty = 0; }
       const az = cam.az * Math.PI / 180;
-      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, right-drag to pan, scroll to zoom, double-click to find the storm`;
-      if (!captureOnly) renderer.render(cam, moving ? 0.5 : undefined);
+      tag.textContent = `Simulated storm · ${Math.round(panel.driver.t / 60)} min · looking ${compass(-Math.cos(az), -Math.sin(az))} · drag to orbit, right-drag to pan, double-click to find the storm`;
+      if (!captureOnly) renderer.render(viewCam(), moving ? 0.5 : undefined);
       return;
     }
     if (st.mode === 'sim') tag.textContent = 'Press Run to grow this storm from scratch in the cloud model. Shown until then: the instant model.';
@@ -288,7 +298,7 @@ export function mountStorm(root: HTMLElement): () => void {
   }
 
   async function captureImage(W: number, H: number): Promise<ImageData | null> {
-    return renderer && (RES?.vol || panel.driver) ? renderer.capture(cam, W, H) : null;
+    return renderer && (RES?.vol || panel.driver) ? renderer.capture(viewCam(), W, H) : null;
   }
   on($('svSave'), 'click', async () => {
     const img = await captureImage(1920, 1200);
@@ -326,15 +336,14 @@ export function mountStorm(root: HTMLElement): () => void {
   ro.observe(root); cleanup.push(() => ro.disconnect());
   cleanup.push(onThemeChange(redraw));
 
-  syncInputs();
-  const match = Object.entries(PRESETS).find(([, p]) => SLIDERS.every(s => p[s.k] === o[s.k]));
-  all('[data-pre]').forEach(b => b.setAttribute('aria-pressed', match && match[0] === b.dataset.pre ? 'true' : 'false'));
+  selectPreset(st.preset);
+  app.env = { ...o };
   lab.checked = st.labels;
   all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === st.prod ? 'true' : 'false'));
   setView(st.view);
   diagnose();
   setMode(st.mode);
-  if (app.link && SLIDERS.every(s => app.link!.env[s.k] === o[s.k])) tor = app.link.params;
+  if (app.link && (Object.keys(o) as (keyof EnvSliders)[]).every(k => app.link!.env[k] === o[k])) tor = app.link.params;
   requestAnimationFrame(loop);
 
   createChaserRenderer($<HTMLCanvasElement>('svGL')).then(r => {

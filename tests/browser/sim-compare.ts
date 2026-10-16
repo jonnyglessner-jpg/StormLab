@@ -20,12 +20,16 @@ async function main() {
   const device = await adapter!.requestDevice();
   device.addEventListener('uncapturederror', e => log('GPU error: ' + (e as GPUUncapturedErrorEvent).error.message));
   const gpu = await SimGPU.create(device, g, base, params);
-  gpu.upload(cpu.f);
   // updraft nudging on for the first 20 steps, so the NUDGE kernel is covered too
-  const nudge = { x: 30000, y: 32000, z: 1500, rh: 8000, rz: 1500, wmax: 10, tau: 10, tEnd: 200 };
-  cpu.nudgeCfg = { ...nudge }; gpu.nudgeCfg = { ...nudge };
+  const nudge = { tau: 10, towers: [
+    { x: 30000, y: 32000, z: 1500, rh: 8000, rz: 1500, wmax: 10, t0: 0, t1: 200 },
+    { x: 26000, y: 30000, z: 1500, rh: 6000, rz: 1500, wmax: 8, t0: 50, t1: 150 }] };
+  cpu.addNoise(0.1, 1500, 3);
+  gpu.upload(cpu.f);
+  cpu.nudgeCfg = nudge; gpu.nudgeCfg = nudge;
   const t0 = performance.now();
-  for (let n = 0; n < steps; n++) gpu.step(1);
+  const batch = +(q.get('batch') ?? 1);
+  for (let n = 0; n < steps; n += batch) gpu.step(Math.min(batch, steps - n));
   const G = await gpu.download();
   const tg = performance.now() - t0;
   const t1 = performance.now();

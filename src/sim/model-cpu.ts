@@ -12,7 +12,7 @@
 import { type BaseState } from './base';
 import { layouts, nC, nU, nV, nW, type GridSpec, type Layout } from './grid';
 import { MP } from './micro';
-import { C, DEFAULT_PARAMS, type Bubble, type Nudge, type SimParams } from './params';
+import { C, DEFAULT_PARAMS, MAX_TOWERS, type Bubble, type Nudge, type SimParams } from './params';
 
 export interface SimFields {
   u: Float32Array; v: Float32Array; w: Float32Array;
@@ -326,18 +326,29 @@ export class SimCPU {
     return m;
   }
 
-  /** Updraft nudging on w levels while t < tEnd. */
+  /** Updraft nudging on w levels: every tower active at the current time, in order. */
   private nudge(): void {
     const n = this.nudgeCfg, g = this.g, f = this.f;
-    if (!n || this.t >= n.tEnd) return;
+    if (!n) return;
     const a = Math.min(1, this.p.dt / n.tau), plane = g.NX * g.NY;
-    for (let k = 1; k < g.NZ; k++) for (let j = 0; j < g.NY; j++) for (let i = 0; i < g.NX; i++) {
-      const x = (i + 0.5) * g.dx, y = (j + 0.5) * g.dy, z = k * g.dz;
-      const r = Math.hypot((x - n.x) / n.rh, (y - n.y) / n.rh, (z - n.z) / n.rz);
-      if (r >= 1) continue;
-      const sh = Math.cos(Math.PI / 2 * r) ** 2, c = k * plane + j * g.NX + i;
-      f.w[c] += a * sh * (n.wmax * sh - f.w[c]);
+    for (const tw of n.towers.slice(0, MAX_TOWERS)) {
+      if (this.t < tw.t0 || this.t >= tw.t1) continue;
+      for (let k = 1; k < g.NZ; k++) for (let j = 0; j < g.NY; j++) for (let i = 0; i < g.NX; i++) {
+        const x = (i + 0.5) * g.dx, y = (j + 0.5) * g.dy, z = k * g.dz;
+        const r = Math.hypot((x - tw.x) / tw.rh, (y - tw.y) / tw.rh, (z - tw.z) / tw.rz);
+        if (r >= 1) continue;
+        const sh = Math.cos(Math.PI / 2 * r) ** 2, c = k * plane + j * g.NX + i;
+        f.w[c] += a * sh * (tw.wmax * sh - f.w[c]);
+      }
     }
+  }
+
+  /** Small random potential-temperature perturbations below zTop (m), to break the symmetry of the start. */
+  addNoise(amp: number, zTop: number, seed = 1): void {
+    const { g, f } = this, plane = g.NX * g.NY;
+    let s = seed >>> 0;
+    const rnd = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+    for (let k = 0; k < g.NZ && (k + 0.5) * g.dz < zTop; k++) for (let c = 0; c < plane; c++) f.th[k * plane + c] += amp * (2 * rnd() - 1);
   }
 
   /** Advance one time step. */

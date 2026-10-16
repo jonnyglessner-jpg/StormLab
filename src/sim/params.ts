@@ -40,14 +40,26 @@ export interface Bubble {
   moist?: boolean;
 }
 
-/** Updraft nudging (Naylor & Gilmore 2012): w is pulled toward wmax inside an ellipsoid until tEnd. */
-export interface Nudge {
+/** One forced thermal: w is pulled toward wmax inside an ellipsoid between model times t0 and t1. */
+export interface Tower {
+  /** centre, m from the domain's south-west corner */
   x: number; y: number; z: number;
+  /** horizontal and vertical radius, m */
   rh: number; rz: number;
   /** target updraft, m/s */
   wmax: number;
-  /** relaxation time, s */
-  tau: number;
-  /** nudging stops at this model time, s */
-  tEnd: number;
+  /** active from t0 until t1, s of model time */
+  t0: number; t1: number;
 }
+/** Most towers a run can use (fixed by the GPU uniform layout). */
+export const MAX_TOWERS = 8;
+
+/**
+ * Updraft nudging (Naylor & Gilmore 2012, as in CM1): each tower's w is relaxed toward its target with time scale
+ * tau while it is active.
+ */
+export interface Nudge { towers: Tower[]; tau: number }
+
+/** A single forced updraft from t = 0 to tEnd, the classic CM1 setup. */
+export const singleNudge = (x: number, y: number, z: number, rh: number, rz: number, wmax: number, tau: number, tEnd: number): Nudge =>
+  ({ towers: [{ x, y, z, rh, rz, wmax, t0: 0, t1: tEnd }], tau });

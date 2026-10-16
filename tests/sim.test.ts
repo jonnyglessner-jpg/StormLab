@@ -4,6 +4,7 @@ import { baseFromEnvironment, baseFromProfile, weismanKlempProfile } from '../sr
 import { D, diagCPU, HailSwath, ND, summarize, TornadoTracker } from '../src/sim/diag';
 import { type GridSpec } from '../src/sim/grid';
 import { MP } from '../src/sim/micro';
+import { singleNudge } from '../src/sim/params';
 import { SimCPU } from '../src/sim/model-cpu';
 import { environment } from '../src/physics/environment';
 import { PRESETS } from '../src/presets';
@@ -52,7 +53,7 @@ describe('cloud model', () => {
 
   test('moist convection in the Weisman-Klemp sounding makes a storm with rain, an ice anvil and hail', () => {
     const s = new SimCPU(small, baseFromProfile(small, weismanKlempProfile(0.0145, 30), 14.21, -1.6), { dt: 10 });
-    s.nudgeCfg = { x: 28000, y: 32000, z: 1500, rh: 10000, rz: 1500, wmax: 10, tau: 10, tEnd: 900 };
+    s.nudgeCfg = singleNudge(28000, 32000, 1500, 10000, 1500, 10, 10, 900);
     for (let n = 0; n < 150; n++) s.step();
     const sm = summarize(s.t, small, diagCPU(small, s.b, s.f));
     assert.ok(sm.wmax > 20, `wmax ${sm.wmax}`);

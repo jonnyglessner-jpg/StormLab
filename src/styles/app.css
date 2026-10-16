@@ -43,6 +43,14 @@ h1{font-family:var(--f-display);font-weight:600;font-size:clamp(30px,4.4vw,46px)
 .rack h2,.card h2{font-family:var(--f-display);font-weight:600;font-size:15px;letter-spacing:.06em;text-transform:uppercase;margin:0;color:var(--muted)}
 .presets{display:flex;flex-wrap:wrap;gap:6px}
 .presets button{flex:1 1 30%}
+.pcards{display:grid;gap:6px}
+.pcard{display:grid;gap:2px;text-align:left;padding:9px 11px;border-radius:8px}
+.pcard b{font-family:var(--f-display);font-weight:600;font-size:14.5px}
+.pcard span{font-size:12.5px;color:var(--muted);line-height:1.35}
+.pcard[aria-pressed="true"] span{color:inherit;opacity:.85}
+.pwatch{border-left:3px solid var(--accent);padding:2px 0 2px 12px}
+.pwatch h3{margin:0 0 4px;font-family:var(--f-display);font-size:15px;font-weight:600}
+.pwatch p{margin:0;font-size:13.5px;line-height:1.45}
 button{font:inherit;font-size:13.5px;font-weight:500;color:var(--ink);background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:6px 8px;cursor:pointer}
 button:hover{border-color:var(--muted)}
 button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}

@@ -5,10 +5,10 @@
  * A always holds the current state between steps.
  */
 import { type BaseState } from './base';
-import { ADV1, ADV2, BUOY, DEP, DIAGW, DIAGZ, DIFFRELAX, DIV, GRAD, LAPH, LINE, MICRO, NUDGE, PACK, SED } from './gpu-kernels';
+import { ADV1, ADV2, BUOY, CLOCK, DEP, DIAGW, DIAGZ, DIFFRELAX, DIV, GRAD, LAPH, LINE, MICRO, NUDGE, PACK, SED } from './gpu-kernels';
 import { nC, nU, nV, nW, type GridSpec } from './grid';
 import { type SimFields } from './model-cpu';
-import { DEFAULT_PARAMS, type Nudge, type SimParams } from './params';
+import { DEFAULT_PARAMS, MAX_TOWERS, type Nudge, type SimParams } from './params';
 
 type FieldName = 'u' | 'v' | 'w' | 'th' | 'qv' | 'qc' | 'qr' | 'qi' | 'qs' | 'qh';
 const FIELDS: FieldName[] = ['th', 'qv', 'qc', 'qr', 'qi', 'qs', 'qh', 'u', 'v', 'w'];
@@ -34,6 +34,8 @@ export class SimGPU {
   base: GPUBuffer;
   private uP: GPUBuffer;
   private uN: GPUBuffer;
+  /** model time on the GPU, advanced by the CLOCK kernel each step */
+  private clk: GPUBuffer;
   nudgeCfg: Nudge | null = null;
   private passes: { pipe: GPUComputePipeline; bind: GPUBindGroup; wg: [number, number, number] }[] = [];
   /** cloud/rain density for the renderer (rgba8unorm, NX x NY x NZ) */
@@ -66,7 +68,8 @@ export class SimGPU {
     put(0, base.th0); put(1, base.qv0); put(2, base.pi0); put(3, base.rho0); put(4, base.p0); put(5, base.u0); put(6, base.v0); put(7, base.rhoW);
     device.queue.writeBuffer(this.base, 0, bd);
     this.uP = device.createBuffer({ size: 80, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
-    this.uN = device.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.uN = device.createBuffer({ size: 16 + 32 * MAX_TOWERS, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    this.clk = buf(4, 'clock');
     this.writeParams();
   }
 
@@ -97,9 +100,9 @@ export class SimGPU {
       if (errs.length) throw new Error(`${label}: ${errs.map(e => `${e.lineNum}:${e.linePos} ${e.message}`).join('; ')}`);
       return d.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'main' }, label });
     };
-    const [pDep, pAdv1, pAdv2, pMicro, pSed, pBuoy, pDiff, pDiv, pLine, pGrad, pNudge, pLap] = await Promise.all([
+    const [pDep, pAdv1, pAdv2, pMicro, pSed, pBuoy, pDiff, pDiv, pLine, pGrad, pNudge, pLap, pClock] = await Promise.all([
       mod(DEP, 'dep'), mod(ADV1, 'adv1'), mod(ADV2, 'adv2'), mod(MICRO, 'micro'), mod(SED, 'sed'),
-      mod(BUOY, 'buoy'), mod(DIFFRELAX, 'diffrelax'), mod(DIV, 'div'), mod(LINE, 'line'), mod(GRAD, 'grad'), mod(NUDGE, 'nudge'), mod(LAPH, 'laph')
+      mod(BUOY, 'buoy'), mod(DIFFRELAX, 'diffrelax'), mod(DIV, 'div'), mod(LINE, 'line'), mod(GRAD, 'grad'), mod(NUDGE, 'nudge'), mod(LAPH, 'laph'), mod(CLOCK, 'clock')
     ]);
     const lay = (f: FieldName, baseIdx: number) => {
       const n = f === 'u' ? [g.NX + 1, g.NY, g.NZ] : f === 'v' ? [g.NX, g.NY + 1, g.NZ] : f === 'w' ? [g.NX, g.NY, g.NZ + 1] : [g.NX, g.NY, g.NZ];
@@ -135,13 +138,15 @@ export class SimGPU {
       add(pDiff, [P, B(L.buf), B(this.base), B(this.B[f]), B(this.A[f]), B(this.tmp)], wg(L.n));
     }
     // 5. updraft nudging (switched on and off through its uniform), then projection
-    add(pNudge, [P, B(this.uN), B(this.A.w)], wg([g.NX, g.NY, g.NZ - 1]));
+    add(pNudge, [P, B(this.uN), B(this.A.w), B(this.clk)], wg([g.NX, g.NY, g.NZ - 1]));
     add(pDiv, [P, B(this.base), B(this.A.u), B(this.A.v), B(this.A.w), B(this.div)], wg(cells));
     const col = [this.uniform([0], []), this.uniform([1], [])];
     const line = [0, 1].map(c => bg(pLine, [P, B(col[c]), B(this.base), B(this.div), B(this.phi)]));
     for (let it = 0; it < this.p.pIters; it++) for (const c of [0, 1]) this.passes.push({ pipe: pLine, bind: line[c], wg: [Math.ceil(g.NX / 8), Math.ceil(g.NY / 8), 1] });
     const comps: [FieldName, [number, number, number]][] = [['u', [g.NX + 1, g.NY, g.NZ]], ['v', [g.NX, g.NY + 1, g.NZ]], ['w', [g.NX, g.NY, g.NZ + 1]]];
     comps.forEach(([f, n], ci) => add(pGrad, [P, B(this.uniform([ci], [])), B(this.phi), B(this.A[f])], wg(n)));
+    // 6. advance the model clock
+    add(pClock, [P, B(this.clk)], [1, 1, 1]);
 
     // outputs: density texture for the renderer and per-column diagnostics
     const [pPack, pDiagW, pDiagZ] = await Promise.all([mod(PACK, 'pack'), mod(DIAGW, 'diagw'), mod(DIAGZ, 'diagz')]);
@@ -184,8 +189,7 @@ export class SimGPU {
 
   /** Encode n time steps into one command buffer and submit. Nudging is evaluated at the start of the batch. */
   step(n = 1): void {
-    const nd = this.nudgeCfg, on = nd && this.t < nd.tEnd ? 1 : 0;
-    this.device.queue.writeBuffer(this.uN, 0, new Float32Array(nd ? [nd.x, nd.y, nd.z, on, nd.rh, nd.rz, nd.wmax, Math.min(1, this.p.dt / nd.tau)] : [0, 0, 0, 0, 1, 1, 0, 0]));
+    this.writeNudge();
     const enc = this.device.createCommandEncoder();
     for (let s = 0; s < n; s++) {
       const pass = enc.beginComputePass();
@@ -196,11 +200,24 @@ export class SimGPU {
     this.t += n * this.p.dt; this.steps += n;
   }
 
+  /** Upload the towers (they switch on and off by the GPU's own clock, so batches of steps stay exact). */
+  private nudgeSent: Nudge | null | undefined = undefined;
+  private writeNudge(): void {
+    const nd = this.nudgeCfg;
+    if (nd === this.nudgeSent) return;
+    this.nudgeSent = nd;
+    const a = new Float32Array(4 + 8 * MAX_TOWERS), tw = nd ? nd.towers.slice(0, MAX_TOWERS) : [];
+    a[0] = tw.length; a[1] = nd ? Math.min(1, this.p.dt / nd.tau) : 0;
+    tw.forEach((t, i) => a.set([t.x, t.y, t.z, t.wmax, t.rh, t.rz, t.t0, t.t1], 4 + 8 * i));
+    this.device.queue.writeBuffer(this.uN, 0, a);
+  }
+
   /** Copy a full CPU state into the GPU (initial conditions). */
   upload(f: SimFields): void {
     const q = this.device.queue;
     for (const k of FIELDS) q.writeBuffer(this.A[k], 0, f[k] as Float32Array<ArrayBuffer>);
     q.writeBuffer(this.phi, 0, f.phi as Float32Array<ArrayBuffer>);
+    q.writeBuffer(this.clk, 0, new Float32Array([this.t]));
     q.writeBuffer(this.acc, 0, f.rain as Float32Array<ArrayBuffer>);
     q.writeBuffer(this.acc, f.rain.byteLength, f.hail as Float32Array<ArrayBuffer>);
   }
@@ -223,7 +240,7 @@ export class SimGPU {
 
   destroy(): void {
     for (const r of [this.A, this.B]) for (const k of FIELDS) r[k].destroy();
-    for (const b of [this.phi, this.div, this.tmp, this.dep, this.acc, this.base, this.uP, this.uN]) b.destroy();
+    for (const b of [this.phi, this.div, this.tmp, this.dep, this.clk, this.acc, this.base, this.uP, this.uN]) b.destroy();
     this.densTex?.destroy(); this.diag?.destroy(); this.diagStage?.destroy();
   }
 }

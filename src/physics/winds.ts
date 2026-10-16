@@ -18,17 +18,18 @@ export const fromDir = (deg: number, spd: number): Vec2 => {
 };
 
 /**
- * A south-easterly surface wind veering through a southerly low-level jet to west-south-westerlies aloft.
+ * Classic south-west flow: a south-easterly surface wind veering through a southerly low-level jet to
+ * south-westerlies through the mid and upper troposphere, so storms move to the north-east.
  * The 6 km wind speed is solved so the 0-6 km bulk shear equals the requested value.
  */
 export function winds(o: WindInput): Winds {
   const s0 = 2.5 + 0.35 * o.llj;
   const V0 = fromDir(150, s0), V05 = fromDir(170, 0.75 * o.llj + 1.5), V1 = fromDir(190, o.llj);
-  const e = fromDir(250, 1), bq = -(e[0] * V0[0] + e[1] * V0[1]), cq = V0[0] * V0[0] + V0[1] * V0[1] - o.shear * o.shear;
+  const e = fromDir(240, 1), bq = -(e[0] * V0[0] + e[1] * V0[1]), cq = V0[0] * V0[0] + V0[1] * V0[1] - o.shear * o.shear;
   const disc = bq * bq - cq, s6 = Math.max(0, -bq + Math.sqrt(Math.max(disc, 0)));
   const V6: Vec2 = [s6 * e[0], s6 * e[1]];
-  const s1 = Math.hypot(V1[0], V1[1]), V3 = fromDir(222, 0.5 * (s1 + s6));
-  const V10 = fromDir(258, o.upper), V12 = fromDir(260, o.upper * 0.95), V16 = fromDir(262, o.upper * 0.5);
+  const s1 = Math.hypot(V1[0], V1[1]), V3 = fromDir(215, 0.5 * (s1 + s6));
+  const V10 = fromDir(245, o.upper), V12 = fromDir(247, o.upper * 0.95), V16 = fromDir(250, o.upper * 0.5);
   const ctrl: [number, Vec2][] = [[0, V0], [500, V05], [1000, V1], [3000, V3], [6000, V6], [10000, V10], [12000, V12], [16000, V16]];
   const u = new Float64Array(NZ), v = new Float64Array(NZ);
   // cubic Hermite (Catmull-Rom style tangents) between control heights

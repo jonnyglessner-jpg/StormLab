@@ -19,6 +19,7 @@ export const SIM_BAR_HTML = `
         <div class="seg" role="group" aria-label="Grid spacing" id="simGrid" style="margin-left:0" title="500 m boxes resolve the storm more sharply but take about six times the GPU work">
           <button data-grid="1000" aria-pressed="true">1 km grid</button><button data-grid="500">500 m</button>
         </div>
+        <label title="Keep the camera moving with the storm, like a chaser driving alongside"><input type="checkbox" id="simFollow"> Move with the storm</label>
         <output id="simClock" style="font-family:var(--f-mono);font-size:13px">0:00</output>
         <span class="gpu-note" id="simNote"></span>
       </div>`;

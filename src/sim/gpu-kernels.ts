@@ -365,23 +365,41 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   }
 }`;
 
-/** Updraft nudging on interior w levels. N: centre (x,y,z,on), (rh, rz, wmax, dt/tau). */
+/**
+ * Updraft nudging on interior w levels. N.h = (tower count, dt/tau); each tower is two vec4s:
+ * (x, y, z, wmax) and (rh, rz, t0, t1). CLK[0] is the model time at the start of the step.
+ */
 export const NUDGE = /* wgsl */`${HEAD}
-struct Nud { a: vec4f, b: vec4f };
+struct Nud { h: vec4f, tw: array<vec4f, 16> };
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<uniform> N: Nud;
 @group(0) @binding(2) var<storage, read_write> W: array<f32>;
+@group(0) @binding(3) var<storage, read> CLK: array<f32>;
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   let k = id.z + 1u;
-  if (N.a.w < 0.5 || id.x >= P.n.x || id.y >= P.n.y || k >= P.n.z) { return; }
+  if (id.x >= P.n.x || id.y >= P.n.y || k >= P.n.z) { return; }
+  let t = CLK[0]; let a = N.h.y;
   let x = (f32(id.x) + 0.5) * P.d.x; let y = (f32(id.y) + 0.5) * P.d.y; let z = f32(k) * P.d.z;
-  let r = length(vec3f((x - N.a.x) / N.b.x, (y - N.a.y) / N.b.x, (z - N.a.z) / N.b.y));
-  if (r >= 1.0) { return; }
-  let q = cos(1.5707963 * r); let sh = q * q;
   let c = (k * P.n.y + id.y) * P.n.x + id.x;
-  W[c] = W[c] + N.b.w * sh * (N.b.z * sh - W[c]);
+  var w = W[c];
+  for (var q = 0u; q < u32(N.h.x); q++) {
+    let A = N.tw[2u * q]; let Bq = N.tw[2u * q + 1u];
+    if (t < Bq.z || t >= Bq.w) { continue; }
+    let r = length(vec3f((x - A.x) / Bq.x, (y - A.y) / Bq.x, (z - A.z) / Bq.y));
+    if (r >= 1.0) { continue; }
+    let qq = cos(1.5707963 * r); let sh = qq * qq;
+    w = w + a * sh * (A.w * sh - w);
+  }
+  W[c] = w;
 }`;
+
+/** Advance the model clock by one time step (one thread). */
+export const CLOCK = /* wgsl */`${HEAD}
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<storage, read_write> CLK: array<f32>;
+@compute @workgroup_size(1)
+fn main() { CLK[0] = CLK[0] + P.d.w; }`;
 
 /**
  * Pack the condensate into the renderer's density texture: extinction (1/km) from cloud water, cloud ice, snow,

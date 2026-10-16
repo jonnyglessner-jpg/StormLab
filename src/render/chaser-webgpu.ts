@@ -57,6 +57,21 @@ struct RU { cp: vec4f, cf: vec4f, cr: vec4f, cu: vec4f, sd: vec4f, a: vec4f, b: 
 }
 fn uvw(p: vec3f) -> vec3f { let L = U.a.w; return vec3f((p.x + L) / (2.0 * L), (p.y + L) / (2.0 * L), p.z / U.b.x); }
 fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233))) * 43758.5453); }
+// farm fields on a one-mile grid of section roads, faded with distance so they don't shimmer
+fn groundColor(p: vec2f, dist: f32) -> vec3f {
+  let sec = 1.609;
+  let cell = floor(p / sec);
+  let h1 = hash(cell + vec2f(0.37, 0.11)); let h2 = hash(cell * 1.7 + vec2f(5.3, 2.9));
+  var field = mix(vec3f(0.22, 0.29, 0.14), vec3f(0.34, 0.32, 0.19), step(0.62, h1));
+  field = mix(field, vec3f(0.17, 0.24, 0.11), step(0.85, h2));
+  let f = fract(p / sec) * sec;
+  let edge = min(min(f.x, sec - f.x), min(f.y, sec - f.y));
+  let w = max(0.012, dist * 0.0011);
+  let road = 1.0 - smoothstep(w, 2.0 * w, edge);
+  let detail = exp(-dist / 30.0);
+  var gc = mix(vec3f(0.24, 0.3, 0.16), field, detail);
+  return mix(gc, vec3f(0.44, 0.42, 0.37), road * detail);
+}
 
 @fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
   let res = U.a.xy;
@@ -103,7 +118,9 @@ fn hash(p: vec2f) -> f32 { return fract(sin(dot(p, vec2f(12.9898, 78.233))) * 43
     var sh = 1.0;
     if (abs(g.x) < L && abs(g.y) < L) { sh = textureSampleLevel(light, samp, vec3f((g.x + L) / (2.0 * L), (g.y + L) / (2.0 * L), 0.01), 0.0).r; }
     let hz = 1.0 - exp(-tg / 70.0);
-    bg = vec3f(0.24, 0.3, 0.16) * (0.3 + 0.7 * sh) * (1.0 - hz) + vec3f(0.62, 0.66, 0.7) * hz * 0.85;
+    // ground position: the volume's frame plus how far it has moved over the ground
+    let gp = g.xy + vec2f(U.cp.w, U.cf.w);
+    bg = groundColor(gp, tg) * (0.3 + 0.7 * sh) * (1.0 - hz) + vec3f(0.62, 0.66, 0.7) * hz * 0.85;
   } else {
     let el = clamp(rd.z, 0.0, 1.0);
     bg = vec3f(0.78, 0.82, 0.86) * pow(1.0 - el, 3.0) + vec3f(0.34, 0.5, 0.76) * (1.0 - pow(1.0 - el, 3.0)) + 0.35 * pow(max(cosg, 0.0), 24.0) * vec3f(1.0, 0.9, 0.7);
@@ -206,7 +223,7 @@ export async function createWebGPURenderer(canvas: HTMLCanvasElement): Promise<C
   function writeUniforms(cam: Camera, W: number, H: number): void {
     const b = cameraBasis(cam);
     device.queue.writeBuffer(renderUBuf, 0, new Float32Array([
-      ...b.cp, 0, ...b.f, 0, ...b.r, 0, ...b.u, 0, ...SUN_DIR, 0,
+      ...b.cp, cam.gx ?? 0, ...b.f, cam.gy ?? 0, ...b.r, 0, ...b.u, 0, ...SUN_DIR, 0,
       W, H, b.th, geom!.L,
       geom!.ZT, BMAX, 1.7, (frame++ % 64) * 1.37
     ]));

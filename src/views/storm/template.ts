@@ -2,29 +2,15 @@
 import { PRESETS } from '../../presets';
 import { SIM_BAR_HTML, SIM_CARD_HTML } from './sim-panel';
 
-export interface SliderDef { k: 'T0F' | 'TdF' | 'moistFt' | 'lapse' | 'cap' | 'llj' | 'shear' | 'upper'; label: string; min: number; max: number; step: number; fmt: (v: number) => string }
-
-export const SLIDERS: SliderDef[] = [
-  { k: 'T0F', label: 'Surface temperature', min: 60, max: 100, step: 1, fmt: v => `${v} °F` },
-  { k: 'TdF', label: 'Surface dewpoint', min: 45, max: 80, step: 1, fmt: v => `${v} °F` },
-  { k: 'moistFt', label: 'Moisture depth above cloud base', min: 0, max: 6000, step: 250, fmt: v => v ? `${v.toLocaleString()} ft` : 'none' },
-  { k: 'lapse', label: 'Mid-level lapse rate', min: 5.5, max: 9.5, step: 0.1, fmt: v => `${v.toFixed(1)} °C/km` },
-  { k: 'cap', label: 'Cap (inversion) strength', min: 0, max: 5, step: 0.25, fmt: v => `+${v.toFixed(2)} °C` },
-  { k: 'llj', label: 'Low-level jet (1 km wind)', min: 0, max: 70, step: 1, fmt: v => `${v} kt` },
-  { k: 'shear', label: 'Deep-layer shear (0–6 km)', min: 0, max: 90, step: 1, fmt: v => `${v} kt` },
-  { k: 'upper', label: 'Upper-level wind (10 km)', min: 10, max: 130, step: 1, fmt: v => `${v} kt` }
-];
-
-const sliderRows = (list: SliderDef[]) => list.map(s =>
-  `<div class="sl"><label for="e_${s.k}">${s.label}</label><output id="o_${s.k}"></output><input type="range" id="e_${s.k}" min="${s.min}" max="${s.max}" step="${s.step}"></div>`).join('');
-const presetButtons = Object.entries(PRESETS).map(([k, p]) => `<button data-pre="${k}">${p.name}</button>`).join('');
+const presetCards = Object.entries(PRESETS).map(([k, p]) =>
+  `<button class="pcard" data-pre="${k}" aria-pressed="false"><b>${p.name}</b><span>${p.blurb}</span></button>`).join('');
 
 export const STORM_HTML = `
 <div class="wrap">
   <header>
     <div class="eyebrow">Instant storm model · parcel theory, Bunkers motion, precipitation trajectories</div>
     <h1>Supercell Lab</h1>
-    <p class="lede">Build the environment and watch the storm it supports. The sliders set the sounding and the winds. From those, the model works out the updraft, the rotation and where the rain and hail fall, then sends any tornado the storm produces to the Tornado Lab.</p>
+    <p class="lede">Pick a setup and watch the storm it supports. Each one is a different kind of severe-weather day. From its sounding and winds, the model works out the updraft, the rotation and where the rain and hail fall, then sends any tornado the storm produces to the Tornado Lab.</p>
   </header>
   <section class="bench">
     <div class="stagecol">
@@ -74,15 +60,10 @@ export const STORM_HTML = `
         <p class="cap" id="tRes" aria-live="polite"></p>
       </div>${SIM_CARD_HTML}
     </div>
-    <aside class="rack" aria-label="Environment">
-      <div style="display:grid;gap:8px">
-        <h2>Setups</h2>
-        <div class="presets" role="group" aria-label="Setups">${presetButtons}</div>
-      </div>
-      <h2>Temperature and moisture</h2>
-      <div class="sliders">${sliderRows(SLIDERS.slice(0, 5))}</div>
-      <h2>Wind</h2>
-      <div class="sliders">${sliderRows(SLIDERS.slice(5))}</div>
+    <aside class="rack" aria-label="Setups">
+      <h2>Setups</h2>
+      <div class="pcards" role="group" aria-label="Setups">${presetCards}</div>
+      <div class="pwatch"><h3 id="pName">—</h3><p id="pWatch">—</p></div>
       <dl class="read" style="grid-template-columns:repeat(2,minmax(0,1fr))">
         <div><dt>CAPE</dt><dd id="eCAPE">—</dd></div>
         <div><dt>CIN</dt><dd id="eCIN">—</dd></div>
@@ -118,8 +99,8 @@ export const STORM_HTML = `
     <div style="display:grid;gap:10px">
       <h2>What the model does</h2>
       <ol>
-        <li><b>Sounding.</b> A well-mixed afternoon boundary layer up to the cumulus base, an optional humid layer above it (the moisture depth slider), a capping inversion on top of that, then your mid-level lapse rate between 3 and 6 km. A 1 km mixed-layer parcel is lifted dry to its LCL and then pseudoadiabatically, with virtual temperature, to get CAPE, CIN and the equilibrium level.</li>
-        <li><b>Winds.</b> A south-easterly surface wind veering through a southerly low-level jet to westerlies aloft, scaled so the 0–6 km shear matches your slider. Storm motion uses the Bunkers right-mover method, and helicity is computed relative to it.</li>
+        <li><b>Sounding.</b> A well-mixed afternoon boundary layer up to the cumulus base, a humid layer above it on days with deep moisture, a capping inversion on top of that, then the setup's mid-level lapse rate between 3 and 6 km. A 1 km mixed-layer parcel is lifted dry to its LCL and then pseudoadiabatically, with virtual temperature, to get CAPE, CIN and the equilibrium level.</li>
+        <li><b>Winds.</b> South-west flow: a south-easterly surface wind veering through a southerly low-level jet to south-westerlies aloft, with the strength of each set by the setup. Storm motion uses the Bunkers right-mover method, and helicity is computed relative to it.</li>
         <li><b>Storm.</b> Updraft speed is half the parcel-theory value √(2·CAPE), the usual result once entrainment and water loading are counted, plus up to 35% from the rotation-driven pressure lift in helical environments. Storm mode follows the 0–6 km shear thresholds used in forecasting (about 20 and 40 kt). Mesocyclone strength scales with √SRH. Precipitation type follows storm-relative anvil-level wind: under about 35 kt is HP, about 35–55 kt classic, above that LP.</li>
         <li><b>Radar and cloud.</b> Thousands of rain, snow and hail particles are released from the updraft and carried by an analytic storm flow, made up of the environmental winds, flow around the updraft, a rotating mesocyclone, a rear-flank downdraft and outflow. They fall at their own speeds, melt below the freezing level and evaporate in dry air. Where they spend time is what the radar shows and what the cloud view renders. Below about 2.5 km, rear-flank precipitation is carried around the low-level mesocyclone, which draws the hook.</li>
         <li><b>Tornado.</b> The chance of a tornado and its likely strength come from the Significant Tornado Parameter, scaled to match how often supercells in such environments produce tornadoes and how the share of EF2+ tornadoes rises with STP in SPC climatology. A tornado from the storm takes its cloud base, forward speed and precipitation type directly from the environment.</li>

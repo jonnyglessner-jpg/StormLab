@@ -11,7 +11,7 @@ import { baseFromEnvironment, type BaseState } from './base';
 import { COARSE_GRID, DEFAULT_GRID, FINE_GRID, stepFor, type GridSpec } from './grid';
 import { SimCPU } from './model-cpu';
 import { SimGPU } from './model-gpu';
-import { type Nudge } from './params';
+import { defaultNudge, START_NOISE } from './start';
 import type { SimWorkerIn, SimWorkerOut } from './sim.worker';
 
 export const RUN_LENGTH = 7200;   // s of model time
@@ -35,11 +35,6 @@ export interface SimDriver {
   /** point the renderer at this simulation's volume again */
   attach(): void;
   destroy(): void;
-}
-
-/** Updraft nudging at 45% of the domain width, like CM1's iinit = 12 (Naylor & Gilmore 2012). */
-export function defaultNudge(g: GridSpec): Nudge {
-  return { x: g.NX * g.dx * 0.45, y: g.NY * g.dy * 0.5, z: 1500, rh: 10000, rz: 1500, wmax: 10, tau: 6, tEnd: 900 };
 }
 
 /** Start a simulation: on the GPU when there is one (fine = the 500 m grid), otherwise on the CPU's coarse grid. */
@@ -68,8 +63,9 @@ class GpuDriver implements SimDriver {
     const base = baseFromEnvironment(g, E), dt = stepFor(g);
     const sim = await SimGPU.create(renderer.device!, g, base, { dt });
     const init = new SimCPU(g, base, { dt });             // initial state is built on the CPU and uploaded
+    init.addNoise(START_NOISE.amp, START_NOISE.zTop, START_NOISE.seed);
     sim.upload(init.f);
-    sim.nudgeCfg = { ...defaultNudge(g), tau: dt };
+    sim.nudgeCfg = defaultNudge(g, dt);
     sim.pack();
     const d = new GpuDriver(sim, g, base, renderer);
     d.attach();
@@ -142,7 +138,7 @@ class CpuDriver implements SimDriver {
       if (m.vol) { this.lastVol = m.vol; if (this.renderer) { this.renderer.setVolume(m.vol); this.volumeDirty = true; } }
       this.onDiag?.({ t: m.t, g: this.g, diag: m.diag });
     };
-    const msg: SimWorkerIn = { type: 'init', env: E.o, nudge: defaultNudge(this.g) };
+    const msg: SimWorkerIn = { type: 'init', env: E.o, nudge: defaultNudge(this.g, 10) };
     this.worker.postMessage(msg);
   }
   get t() { return this.tNow; }

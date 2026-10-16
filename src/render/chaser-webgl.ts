@@ -9,7 +9,23 @@ in vec2 p; void main(){ gl_Position = vec4(p, 0., 1.); }`;
 const FS = `#version 300 es
 precision highp float; precision highp sampler3D;
 uniform sampler3D A; uniform sampler3D Nz; uniform vec2 res; uniform float L; uniform float ZT;
-uniform vec3 cp; uniform vec3 cr; uniform vec3 cu; uniform vec3 cf; uniform float th; uniform float bmax; uniform vec3 sd;
+uniform vec3 cp; uniform vec3 cr; uniform vec3 cu; uniform vec3 cf; uniform float th; uniform float bmax; uniform vec3 sd; uniform vec2 go;
+float hash2(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+// farm fields on a one-mile grid of section roads, faded with distance (same as the WebGPU renderer)
+vec3 groundColor(vec2 p, float dist) {
+  float sec = 1.609;
+  vec2 cell = floor(p / sec);
+  float h1 = hash2(cell + vec2(.37, .11)), h2 = hash2(cell * 1.7 + vec2(5.3, 2.9));
+  vec3 field = mix(vec3(.22, .29, .14), vec3(.34, .32, .19), step(.62, h1));
+  field = mix(field, vec3(.17, .24, .11), step(.85, h2));
+  vec2 f = fract(p / sec) * sec;
+  float edge = min(min(f.x, sec - f.x), min(f.y, sec - f.y));
+  float w = max(.012, dist * .0011);
+  float road = 1. - smoothstep(w, 2. * w, edge);
+  float detail = exp(-dist / 30.);
+  vec3 gc = mix(vec3(.24, .3, .16), field, detail);
+  return mix(gc, vec3(.44, .42, .37), road * detail);
+}
 out vec4 o;
 vec3 S(vec3 q){ return texture(A, vec3((q.x + L) / (2. * L), (q.y + L) / (2. * L), q.z / ZT)).rgb; }
 void main(){
@@ -49,7 +65,7 @@ void main(){
     float sh = 1.;
     if (abs(g.x) < L && abs(g.y) < L) sh = texture(A, vec3((g.x + L) / (2. * L), (g.y + L) / (2. * L), .01)).g;
     float hz = 1. - exp(-tg / 70.);
-    bg = vec3(.24, .3, .16) * (.3 + .7 * sh) * (1. - hz) + vec3(.62, .66, .7) * hz * .85;
+    bg = groundColor(g.xy + go, tg) * (.3 + .7 * sh) * (1. - hz) + vec3(.62, .66, .7) * hz * .85;
   } else {
     float el = clamp(rd.z, 0., 1.);
     bg = vec3(.78, .82, .86) * pow(1. - el, 3.) + vec3(.34, .5, .76) * (1. - pow(1. - el, 3.)) + .35 * pow(max(cosg, 0.), 24.) * vec3(1., .9, .7);
@@ -76,7 +92,7 @@ export function createWebGLRenderer(canvas: HTMLCanvasElement): ChaserRenderer |
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
   const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   const U: Record<string, WebGLUniformLocation | null> = {};
-  for (const n of ['A', 'Nz', 'res', 'L', 'ZT', 'cp', 'cr', 'cu', 'cf', 'th', 'bmax', 'sd']) U[n] = gl.getUniformLocation(prog, n);
+  for (const n of ['A', 'Nz', 'res', 'L', 'ZT', 'cp', 'cr', 'cu', 'cf', 'th', 'bmax', 'sd', 'go']) U[n] = gl.getUniformLocation(prog, n);
   gl.uniform1i(U.A, 0); gl.uniform1i(U.Nz, 1);
   const tex = gl.createTexture();
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -93,7 +109,7 @@ export function createWebGLRenderer(canvas: HTMLCanvasElement): ChaserRenderer |
     const b = cameraBasis(cam);
     gl.uniform2f(U.res, W, H); gl.uniform3fv(U.cp, b.cp); gl.uniform3fv(U.cr, b.r); gl.uniform3fv(U.cu, b.u); gl.uniform3fv(U.cf, b.f);
     gl.uniform1f(U.th, b.th); gl.uniform1f(U.bmax, BMAX); gl.uniform1f(U.L, vol.Rv / 1000); gl.uniform1f(U.ZT, vol.ZT / 1000);
-    gl.uniform3fv(U.sd, SUN_DIR);
+    gl.uniform3fv(U.sd, SUN_DIR); gl.uniform2f(U.go, cam.gx ?? 0, cam.gy ?? 0);
     gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D, tex);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, ntex);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
