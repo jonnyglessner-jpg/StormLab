@@ -76,7 +76,7 @@ export function planStorm(E: Environment, S: StormDiag): StormPlan {
     striation: (lp ? 1 : hp ? 0.3 : 0.65) * clamp(S.vMid / 18, 0.4, 1.2),
     ffd: lp ? 0.35 : hp ? 1.5 : 1, hail: lp ? 0.6 : hp ? 1.1 : 1, rfd: lp ? 0.25 : hp ? 1.4 : 0.9,
     wrap: hp ? 0.75 : 0, slot: hp ? 0.45 : lp ? 0.8 : 1, tail: lp ? 0.6 : hp ? 0.85 : 1,
-    anvilLen: clamp(28 + 1.1 * E.srAnvil, 20, 62),
+    anvilLen: clamp(26 + 1.0 * E.srAnvil, 20, 52),
     Rw: clamp(1.4 + 1.1 * meso, 1.3, 2.8) * (hp ? 1.2 : 1), lower: clamp(0.25 + 0.3 * meso, 0.2, 0.6) * clamp(1.6 - zb / 2, 0.6, 1.3),
     spin: 0.04 + 0.08 * meso, mesoSpin: 0.025 + 0.03 * meso,
     tornadic: kind === 'supercell' && S.ptor >= 0.3,
@@ -96,8 +96,8 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   const set = (slot: number, x: number, y: number, z: number, w: number) => a.set([x, y, z, w], slot * 4);
   const [fx, fy] = P.fwd, [lx, ly] = P.lft;
   const at2 = (f: number, l: number, o: [number, number] = up): [number, number] => [o[0] + f * fx + l * lx, o[1] + f * fy + l * ly];
-  // updraft 15 km upstream of the volume's centre along the anvil, so the anvil fits downstream
-  const up: [number, number] = [-P.adir[0] * 15, -P.adir[1] * 15];
+  // updraft 20 km upstream of the volume's centre along the anvil, so the anvil (and its backshear) fit
+  const up: [number, number] = [-P.adir[0] * 20, -P.adir[1] * 20];
   let stage = '', caption = '', torOn = 0;
 
   // ---- defaults: nothing
@@ -117,7 +117,9 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
     towerR = P.R * (0.8 + 0.2 * ramp(t, 4, 20) + 0.25 * ramp(t, 20, 40));   // broadening as the mesocyclone matures
     towerAmt = 1;
     overshoot = ramp(t, 14, 20) * (0.7 + 0.3 * Math.sin(t * 0.9));
-    anvilAmt = ramp(t, 10, 20); anvilLen = 5 + P.anvilLen * ramp(t, 10, 55); back = 1.5 + 3 * ramp(t, 20, 40);
+    anvilAmt = ramp(t, 10, 20); anvilLen = 5 + P.anvilLen * ramp(t, 10, 55);
+    // backshear: the anvil spreads upwind against the wind aloft too, over the flanking line, by up to 3 updraft radii
+    back = P.R * (0.8 + 2.2 * ramp(t, 16, 40));
     mamm = 0.8 * ramp(t, 32, 48);
     strat = P.striation * ramp(t, 20, 32);
     ffdAmt = P.ffd * ramp(t, 14, 24); hailAmt = P.hail * ramp(t, 18, 28);

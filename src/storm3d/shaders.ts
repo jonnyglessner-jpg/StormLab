@@ -295,23 +295,24 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let back = S.anvil2.w * grow;
     let nb = max(back + R * 0.5, 0.5);
     let A = 0.5 * (Lz + nb); let sc = 0.5 * (Lz - nb);
-    let B = R * (1.2 + 0.6 * grow) + A * 0.38 * grow;
+    let B = R * (1.2 + 0.6 * grow) + A * 0.34 * grow;
     // a slightly egg-shaped oval: fuller toward the storm's end
     let su = (s - sc) / A;
     let Bq = B * (1.0 - 0.18 * su);
     let e = length(vec2f(su, q / max(Bq, 0.5)));
     let outD = (e - 1.0) * min(Bq, A);
-    let inPlan = ss(0.8, -1.4, outD + n * 1.5 + streak * (0.6 + 2.5 * fr));
+    let inPlan = ss(1.0, -1.6, outD + n * 1.5 + streak * (0.6 + 1.2 * fr));
     // cross-section: a lens, thinning to feathered edges (but a sharp, steep edge upwind)
     let qe = clamp(e, 0.0, 1.0);
     let lens = mix(sqrt(max(1.0 - qe * qe, 0.0)), pow(max(1.0 - qe * qe, 0.0), 0.2), ss(-0.3, -0.8, su));
     // vertical: flat top, a little higher over the updraft; thick near the storm, thin far out
-    // gravity-wave ripples drawn across the canopy downstream
-    let ripple = 0.08 * sin(s * 0.85 + q * 0.15 + n * 4.0) * ss(0.1, 0.4, fr);
-    let topz = S.anvil2.y + 0.35 * exp(-max(s, 0.0) / 8.0) - 0.3 * fr + n * 0.06 + ripple;
-    let thick = mix(3.2, 0.3, pow(fr, 0.55)) * (0.55 + 0.45 * grow) * (0.2 + 0.8 * lens);
+    let topz = S.anvil2.y + 0.35 * exp(-max(s, 0.0) / 8.0) - 0.3 * fr + n * 0.06;
+    // the backsheared part stays thick, with a sharp edge, its underside sloping down toward the updraft
+    let upw = ss(0.0, -nb, s);
+    let thick = mix(2.7, 0.3, pow(fr, 0.55)) * mix(1.0, 0.45, upw) * (0.55 + 0.45 * grow) * (0.2 + 0.8 * lens);
     let botz = topz - thick + n * 0.5 * thick + streak * 0.2 * fr;
-    let vert = ss(botz - 0.2, botz + 0.35, p.z) * ss(topz + 0.1, topz - 0.25, p.z);
+    // a soft top over several grid levels, so the gently sloping top doesn't show a contour line where it crosses one
+    let vert = ss(botz - 0.2, botz + 0.35, p.z) * ss(topz + 0.25, topz - 0.55, p.z + streak * 0.25);
     // downstream it thins into cirrus and fades out
     let dens = mix(1.0, 0.3, ss(0.05, 0.9, fr)) * (1.0 - ss(0.7, 1.05, fr + streak * 0.2)) * mix(0.6, 1.0, lens);
     let av = inPlan * vert * dens;
@@ -319,14 +320,26 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let knuckle = (1.0 - ss(3.0, 12.0, s)) * ss(0.35, 0.9, qe);
     mw += av * av; ms += av * av * mix(icy(0.35 + 0.65 * ss(0.02, 0.3, fr)), water(0.8), 0.85 * knuckle);
     cloud = max(cloud, av);
-    // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm
-    if (S.anvil2.z > 0.0) {
-      let pn = n3(vec3f(p.x * 0.42, p.y * 0.42, 0.3) + vec3f(0.5, 0.1, 0.3));
-      let pouch = ss(0.6, 0.78, pn);
-      let depth = 0.8 * S.anvil2.z * pouch * lens;
-      let under = ss(botz - depth - 0.05, botz - depth + 0.25, p.z) * (1.0 - ss(botz + 0.1, botz + 0.4, p.z));
-      let mv = 0.75 * under * inPlan * ss(0.04, 0.12, fr) * (1.0 - ss(0.35, 0.55, fr)) * step(0.05, depth);
-      mw += mv * mv; ms += mv * mv * water(0.3);
+    // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm. Each is a lobe on a
+    // jittered grid (about 1.6 km apart), so they read as round bulges rather than a blotchy texture
+    if (S.anvil2.z > 0.0 && fr > 0.03 && fr < 0.6) {
+      let cs = 1.6;
+      let g = p.xy / cs; let gi = floor(g);
+      var dep = 0.0;
+      for (var oy = -1; oy <= 1; oy++) {
+        for (var ox = -1; ox <= 1; ox++) {
+          let c = gi + vec2f(f32(ox), f32(oy));
+          let h1 = hash1(c.x * 17.3 + c.y * 91.7); let h2 = hash1(c.x * 43.1 + c.y * 7.9); let h3 = hash1(c.x * 5.7 + c.y * 61.3);
+          let ctr = (c + vec2f(0.2 + 0.6 * h1, 0.2 + 0.6 * h2)) * cs;
+          let rr = cs * (0.32 + 0.22 * h3);
+          let d = length(p.xy - ctr) / rr;
+          dep = max(dep, rr * 0.8 * sqrt(max(1.0 - d * d, 0.0)) * step(0.25, h3));
+        }
+      }
+      let band = ss(0.03, 0.1, fr) * (1.0 - ss(0.4, 0.6, fr)) * lens;
+      let depth = 0.7 * S.anvil2.z * band * dep;
+      let mv = 0.85 * inPlan * step(0.03, depth) * ss(botz - depth - 0.04, botz - depth + 0.1, p.z) * (1.0 - ss(botz + 0.05, botz + 0.3, p.z));
+      mw += mv * mv; ms += mv * mv * icy(0.6);   // shaded like the anvil's underside, not as separate dark blobs
       cloud = max(cloud, mv);
     }
   }
@@ -632,6 +645,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             var v1 = textureSampleLevel(dens, samp, uvw(q1), 0.0).r; let v2 = textureSampleLevel(dens, samp, uvw(q2), 0.0).r;
             if (turb > 0.25) { v1 += (detail(q1, turb, 1.0) - 0.5) * 0.7 * turb; }
             selfSh = (1.0 - 0.75 * clamp((v1 - 0.3) * 2.2, 0.0, 1.0)) * (1.0 - 0.5 * clamp((v2 - 0.3) * 2.0, 0.0, 1.0));
+            selfSh = mix(selfSh, 1.0, smoothstep(0.0, 0.2, ice));   // fade out toward ice, so there is no seam
           }
           // skylight comes from above: cloud just overhead (the underside of a base or a shelf) gets little of it
           let vUp = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.45)), 0.0).r;
