@@ -277,40 +277,56 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     cloud *= 1.0 - slot;
   }
 
-  // ---- anvil: a wedge spreading downwind from the top of the updraft. Thick and lumpy where it leaves the tower,
-  // thinning downstream into translucent, streaky ice; a rounded edge pushed upwind (backshear); mammatus beneath.
+  // ---- anvil: ice spreading out under the tropopause. Seen from above (satellite), an oval canopy drawn out along
+  // the wind aloft: its upwind end a sharp, rounded edge just upwind of the updraft (pushed there by the backshear),
+  // bubbly with overshooting tops near the updraft, its widest part well downwind, tapering again far downstream.
+  // Its top is flat and smooth with faint ripples; in cross-section it is a lens, thinning to feathered edges; thick
+  // near the storm, it thins downstream into streaky cirrus that fades out rather than ending at a wall. Mammatus
+  // hang beneath it downwind of the storm.
   if (S.anvil.w > 0.0) {
     let a0 = S.up.xy + S.tilt.xy * (el - zb);
     let ad = S.anvil.xy; let an = vec2f(-ad.y, ad.x);
     let s = dot(p.xy - a0, ad); let q = dot(p.xy - a0, an);
-    let n = fbm(p * 0.8 + vec3f(3.1, 1.7, 0.0)) - 0.5;
-    let streak = 0.6 * n3(vec3f(s * 0.03, q * 0.3, p.z * 0.4) + vec3f(0.2, 0.5, 0.8)) + 0.4 * n3(vec3f(s * 0.08, q * 0.12, p.z * 0.3) + vec3f(0.7, 0.1, 0.5)) - 0.5;
-    let Lz = max(S.anvil.z, 2.0); let grow = S.anvil.w;
+    let grow = S.anvil.w; let Lz = max(S.anvil.z, 2.0);
     let fr = clamp(s / Lz, 0.0, 1.0);
+    let n = fbm(p * 0.5 + vec3f(3.1, 1.7, 0.0)) - 0.5;
+    let streak = 0.6 * n3(vec3f(s * 0.022, q * 0.2, p.z * 0.25) + vec3f(0.2, 0.5, 0.8)) + 0.4 * n3(vec3f(s * 0.05, q * 0.45, p.z * 0.4) + vec3f(0.7, 0.1, 0.5)) - 0.5;
+    // plan: an ellipse from just upwind of the updraft to the far end, about 2.5 times as long as it is wide
     let back = S.anvil2.w * grow;
-    // half-width: spreads downstream; upwind it closes in a rounded nose
-    let W0 = R * (1.1 + 0.5 * grow);
-    let W = W0 + max(s, 0.0) * 0.4 * (0.5 + 0.5 * grow);
-    let nb = max(back + R * 0.4, 0.5);
-    // distance outside the anvil's outline: straight flanks downstream, an elliptical nose upwind
-    let outD = select(abs(q) - W, (length(vec2f(s / nb, q / W0)) - 1.0) * W0, s < 0.0);
-    let topz = S.anvil2.y - 0.4 * fr + 0.3 * exp(-max(s, 0.0) / 6.0) + n * 0.08;
-    let thick = mix(2.3, 0.45, pow(fr, 0.4)) * (0.6 + 0.4 * grow);
-    let botz = topz - thick + n * 0.7 + streak * 0.4 * fr;
-    let inW = ss(1.0, -1.4, outD + n * 1.6 + streak * 1.2 * fr);
-    let inL = 1.0 - ss(0.72, 1.0, s / Lz + n * 0.12 + streak * 0.1);
-    let vert = ss(botz - 0.2, botz + 0.5, p.z) * ss(topz + 0.15, topz - 0.35, p.z);
-    let dens = mix(1.0, 0.5, ss(0.15, 0.9, fr));
-    let av = inW * inL * vert * dens;
-    mw += av * av; ms += av * av * icy(0.5 + 0.5 * ss(0.05, 0.4, fr));
+    let nb = max(back + R * 0.5, 0.5);
+    let A = 0.5 * (Lz + nb); let sc = 0.5 * (Lz - nb);
+    let B = R * (1.2 + 0.6 * grow) + A * 0.38 * grow;
+    // a slightly egg-shaped oval: fuller toward the storm's end
+    let su = (s - sc) / A;
+    let Bq = B * (1.0 - 0.18 * su);
+    let e = length(vec2f(su, q / max(Bq, 0.5)));
+    let outD = (e - 1.0) * min(Bq, A);
+    let inPlan = ss(0.8, -1.4, outD + n * 1.5 + streak * (0.6 + 2.5 * fr));
+    // cross-section: a lens, thinning to feathered edges (but a sharp, steep edge upwind)
+    let qe = clamp(e, 0.0, 1.0);
+    let lens = mix(sqrt(max(1.0 - qe * qe, 0.0)), pow(max(1.0 - qe * qe, 0.0), 0.2), ss(-0.3, -0.8, su));
+    // vertical: flat top, a little higher over the updraft; thick near the storm, thin far out
+    // gravity-wave ripples drawn across the canopy downstream
+    let ripple = 0.08 * sin(s * 0.85 + q * 0.15 + n * 4.0) * ss(0.1, 0.4, fr);
+    let topz = S.anvil2.y + 0.35 * exp(-max(s, 0.0) / 8.0) - 0.3 * fr + n * 0.06 + ripple;
+    let thick = mix(3.2, 0.3, pow(fr, 0.55)) * (0.55 + 0.45 * grow) * (0.2 + 0.8 * lens);
+    let botz = topz - thick + n * 0.5 * thick + streak * 0.2 * fr;
+    let vert = ss(botz - 0.2, botz + 0.35, p.z) * ss(topz + 0.1, topz - 0.25, p.z);
+    // downstream it thins into cirrus and fades out
+    let dens = mix(1.0, 0.3, ss(0.05, 0.9, fr)) * (1.0 - ss(0.7, 1.05, fr + streak * 0.2)) * mix(0.6, 1.0, lens);
+    let av = inPlan * vert * dens;
+    // lumpy knuckles round the head near the updraft; smooth, streaky ice further out
+    let knuckle = (1.0 - ss(3.0, 12.0, s)) * ss(0.35, 0.9, qe);
+    mw += av * av; ms += av * av * mix(icy(0.35 + 0.65 * ss(0.02, 0.3, fr)), water(0.8), 0.85 * knuckle);
     cloud = max(cloud, av);
-    // mammatus: rounded pouches hanging from the underside, nearer the storm
+    // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm
     if (S.anvil2.z > 0.0) {
-      let pouch = ss(0.56, 0.74, n3(vec3f(p.x * 0.5, p.y * 0.5, p.z * 0.25) + vec3f(0.5, 0.1, 0.3)));
-      let depth = 0.7 * S.anvil2.z * pouch;
-      let under = ss(botz - depth - 0.05, botz - depth + 0.2, p.z) * (1.0 - ss(botz + 0.1, botz + 0.4, p.z));
-      let mv = 0.8 * under * inW * ss(0.05, 0.15, fr) * (1.0 - ss(0.45, 0.65, fr)) * step(0.05, depth);
-      mw += mv * mv; ms += mv * mv * water(0.35);
+      let pn = n3(vec3f(p.x * 0.42, p.y * 0.42, 0.3) + vec3f(0.5, 0.1, 0.3));
+      let pouch = ss(0.6, 0.78, pn);
+      let depth = 0.8 * S.anvil2.z * pouch * lens;
+      let under = ss(botz - depth - 0.05, botz - depth + 0.25, p.z) * (1.0 - ss(botz + 0.1, botz + 0.4, p.z));
+      let mv = 0.75 * under * inPlan * ss(0.04, 0.12, fr) * (1.0 - ss(0.35, 0.55, fr)) * step(0.05, depth);
+      mw += mv * mv; ms += mv * mv * water(0.3);
       cloud = max(cloud, mv);
     }
   }
@@ -596,10 +612,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         if (ice > 0.01) {
           // ice: fibrous streaks drawn out along the wind aloft
           let ad = S.anvil.xy; let an = vec2f(-ad.y, ad.x);
-          let fib = 0.45 * n3(vec3f(dot(q.xy, ad) * 0.08, dot(q.xy, an) * 0.4, q.z * 0.7)) + 0.55 * n3(q * 0.5 + vec3f(0.2, 0.9, 0.4));
+          let fib = 0.55 * n3(vec3f(dot(q.xy, ad) * 0.04, dot(q.xy, an) * 0.3, q.z * 0.5)) + 0.45 * n3(q * 0.3 + vec3f(0.2, 0.9, 0.4));
           nn = mix(nn, fib, ice);
         }
-        let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.5, ice) - 0.25 * stri;
+        let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.35, ice) - 0.25 * stri;
         let lowSoft = 1.0 - smoothstep(S.base.x + 0.2, S.base.x + 0.8, q.z);   // undersides: soft and ragged
         let ddW = mix(smoothstep(0.26, 0.4, v), smoothstep(0.18, 0.55, v), lowSoft) * (0.4 + 0.6 * smoothstep(0.4, 0.75, v));
         let ddI = smoothstep(0.18, 0.8, v) * 0.6;
