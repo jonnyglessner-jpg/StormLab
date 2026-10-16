@@ -101,9 +101,10 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       let north = smoothstep(0.5, 1.0, cos(th - 0.7)); let south = smoothstep(0.6, 1.0, cos(th + 2.44));
       let depth = (0.05 + 0.5 * S.wall2.x * north + 0.12 * south) * (0.5 + 0.5 * nl);
       let bot = zb - depth - (nl - 0.5) * 0.12;
-      let wid = 0.35 + 0.35 * nl;
-      let lip = am * smoothstep(wid, wid * 0.3, abs(rb - Rs * 1.02) + (nl - 0.5) * 0.9)
-        * smoothstep(bot - 0.03, bot + 0.06, p.z) * smoothstep(zb + 0.2, zb, p.z);
+      // it hangs from the base just outside the slot and rises into it: no gap between lip and base
+      let wid = 0.3 + 0.3 * nl;
+      let lip = am * smoothstep(wid, wid * 0.3, abs(rb - Rs * 0.97) + (nl - 0.5) * 0.6)
+        * smoothstep(bot - 0.03, bot + 0.06, p.z) * smoothstep(zb + 0.45, zb + 0.15, p.z);
       v = max(v, S.rfdb.w * lip * 0.9);
     }
   }
@@ -204,7 +205,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let top = ztc - dome * pow(min(r / max(rad, 0.1), 1.5), 2.0) + n * mix(1.1, 2.4, young);
     // where the side slopes gently (the skirt) the edge moves a long way per grid level: widen the ramp to match, or
     // the surface shows terraces at every level
-    let ew = 0.55 + 0.12 * R * (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0));
+    let ew = 0.55 + 0.05 * R * (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0));
     var tw = ss(ew, -ew, r - edge) * ss(zb - 0.05, zb + 0.15, p.z) * ss(top + 0.3, top - 0.6, p.z);
     // overshooting top: a dome pushing up through the anvil, rising as the updraft matures
     let oh = 1.8 * S.tilt.z;
@@ -230,8 +231,8 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
     let th = atan2(dot(db, lf), dot(db, fw));
     let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
-    let hole = ss(Rs * 1.0, Rs * 0.7, rb + nsl * Rs * 0.35);
-    let hgt = zb + (1.5 + 3.2 * S.rfdb.w) * (0.6 + 0.4 * ss(0.5, -0.8, cos(th)));
+    let hole = ss(Rs * 0.92, Rs * 0.62, rb + nsl * Rs * 0.3);
+    let hgt = zb + (1.2 + 2.2 * S.rfdb.w) * (0.6 + 0.4 * ss(0.5, -0.8, cos(th)));
     let slot = clamp(S.rfdb.w * hole * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
     cloud *= 1.0 - slot;
   }
@@ -568,7 +569,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             nn = mix(nn, detail(qr, turb, lod), m);
             let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(-0.2, 0.15, zr);
             // only on the updraft's own surface, not on flanking towers that come within reach
-            let own = 1.0 - smoothstep(1.0 * radAt, 1.3 * radAt, ur);
+            let own = 1.0 - smoothstep(0.75 * radAt, 1.05 * radAt, ur);   // not on the thin rim of the skirt, where grooves would cut teeth
             if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2))); }
           }
         }

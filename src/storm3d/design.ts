@@ -137,7 +137,7 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
       rfdAmt = P.rfd * ramp(tau, 8, 16);
       // the surge: its northern curl sits under the rear-right of the wall cloud; it bulges out to the south and east
       const curlN: [number, number] = [wc[0] + (-0.35 * fx - 0.35 * lx) * P.Rw, wc[1] + (-0.35 * fy - 0.35 * ly) * P.Rw];
-      Rs = P.Rw * (0.6 + 1.5 * ramp(tau, 9, 26));
+      Rs = P.Rw * (0.45 + 0.7 * ramp(tau, 9, 26));
       // angles in the storm's frame (0 = downstream, +90 = left of motion): the surge centre lies south-south-west of
       // the tornado, its gust front bulging east between the northern curl (+40) and the southern curl (-140)
       const thN = 40 * Math.PI / 180, thS = -140 * Math.PI / 180;
