@@ -54,7 +54,9 @@ cycle), an anticyclonic tornado turning clockwise. Everything else turns counter
 The anvil is drawn as thin layers of ice, not lumpy cloud: from above an oval canopy drawn out along the wind aloft,
 backsheared upwind of the updraft, flat-topped and thinning downstream into streaky, translucent cirrus. The tower
 flares smoothly into it, and its cauliflower texture blends out into the ice. The scene is lit by an early-evening sun
-low in the west (the Plains' peak tornado hours). The view can go full screen (button or F).
+low in the west (the Plains' peak tornado hours). The view can go full screen (button or F11). The camera works like a city-builder's (`src/views/storm/camera-rig.ts`):
+WASD or arrows move, Q/E rotate, R/F tilt, the wheel zooms toward the cursor, right-drag pans, left- or middle-drag
+rotates; motion eases, pan speed scales with distance, and the camera stays above the ground.
 
 `stormAt` gives every feature's size and place at any minute: towering cumulus (0–14 min), anvil (10–20), rain
 and hail (14–28), striations, inflow tail and flanking line (18–34), then repeating 38-minute cycles of wall cloud,

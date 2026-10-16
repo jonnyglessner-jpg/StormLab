@@ -33,9 +33,9 @@ export const STORM_HTML = `
         <div class="seg" role="group" aria-label="Detail" style="margin-left:0">
           <button data-q="high" aria-pressed="true">High detail</button><button data-q="low">Faster</button>
         </div>
-        <button id="svFull" type="button" title="Full screen (F); Esc to leave">Full screen</button>
+        <button id="svFull" type="button" title="Full screen (F11); Esc to leave">Full screen</button>
         <button id="svSave" type="button">Save image</button>
-        <span class="gpu-note">Drag to orbit · right-drag to pan · scroll to zoom · double-click to find the storm</span>
+        <span class="gpu-note">WASD move · Q/E rotate · R/F tilt · scroll zoom · right-drag pan · drag rotate · double-click finds the storm</span>
         <span class="gpu-note" id="svGpu"></span>
       </div>
     </div>

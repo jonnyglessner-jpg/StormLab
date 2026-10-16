@@ -3,7 +3,7 @@
  * below. The storm is the designed supercell (src/storm3d): its anatomy and life cycle follow the conceptual model,
  * driven by the setup's environment.
  */
-import { clamp, FT, KT } from '../../physics/constants';
+import { FT, KT } from '../../physics/constants';
 import { environment, type Environment } from '../../physics/environment';
 import { storm, tornadoParams, type StormDiag } from '../../physics/storm';
 import { envOf, PRESETS, type EnvSliders } from '../../presets';
@@ -13,6 +13,7 @@ import { QUALITY_HIGH, QUALITY_LOW, StormRenderer } from '../../storm3d/renderer
 import { app } from '../../state';
 import { onThemeChange } from '../../ui/canvas';
 import { toEnv } from '../../units';
+import { CameraRig } from './camera-rig';
 import { drawHodograph } from './hodograph';
 import { drawSkewT } from './skewt';
 import { STORM_HTML } from './template';
@@ -54,12 +55,19 @@ export function mountStorm(root: HTMLElement): () => void {
 
   /* ---------- camera: free look in ground coordinates ---------- */
   // the storm travels with its motion; the camera stays put unless "Move with the storm" is on
-  const cam: Camera = { az: -70, dist: 24, h: 0.1, tz: 3 };   // from the south-south-east, the storm side-lit by the late sun
+  // from the south-south-east, 24 km out, the storm side-lit by the evening sun
+  const rig = new CameraRig({ az: -70, dist: 24, h: 0.1, tz: 2.9, tx: 0, ty: 0 });
   let aimed = false, lastOff: [number, number] = [0, 0];
   const offset = (): [number, number] => plan ? [plan.motion[0] * t * 0.06, plan.motion[1] * t * 0.06] : [0, 0];   // km
-  function aimAtStorm() {
+  function stormPoint(): [number, number] {
     const [ox, oy] = offset(), ux = frame ? frame.params[64] : 0, uy = frame ? frame.params[65] : 0;
-    cam.tx = ux + ox; cam.ty = uy + oy; lastOff = [ox, oy]; aimed = true;
+    return [ux + ox, uy + oy];
+  }
+  /** Find the storm: fly there, or jump on first use. */
+  function aimAtStorm(jump = false) {
+    const [x, y] = stormPoint();
+    if (jump) rig.jumpTo(x, y); else rig.lookAt(x, y);
+    lastOff = offset(); aimed = true;
   }
 
   /* ---------- setups ---------- */
@@ -100,41 +108,56 @@ export function mountStorm(root: HTMLElement): () => void {
   });
 
   const captureOnly = new URLSearchParams(location.search).has('capture-only');
-  let moving = false, settleCam = 0;
-  const settleView = () => { clearTimeout(settleCam); settleCam = window.setTimeout(() => { moving = false; }, 160); };
-  cleanup.push(() => clearTimeout(settleCam));
+  // the camera: city-builder controls (see camera-rig.ts)
+  let viewActive = false;
   function bindOrbit(c: HTMLCanvasElement) {
-    let drag: { x: number; y: number; az: number; h: number; pan: boolean; tx: number; ty: number } | null = null;
+    c.tabIndex = 0;
+    let drag: { x: number; y: number; pan: boolean } | null = null;
     on(c, 'contextmenu', e => e.preventDefault());
+    on(c, 'pointerenter', () => { viewActive = true; });
+    on(c, 'pointerleave', () => { viewActive = false; });
     on(c, 'pointerdown', e => {
-      const pan = e.button === 2 || e.button === 1 || e.shiftKey;
-      drag = { x: e.clientX, y: e.clientY, az: cam.az, h: cam.h, pan, tx: cam.tx ?? 0, ty: cam.ty ?? 0 };
-      c.setPointerCapture(e.pointerId); c.style.cursor = pan ? 'move' : 'grabbing';
+      c.focus({ preventScroll: true });
+      drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 };
+      c.setPointerCapture(e.pointerId); c.style.cursor = drag.pan ? 'move' : 'grabbing';
+      if (e.button === 1) e.preventDefault();
     });
     on(c, 'pointermove', e => {
       if (!drag) return;
-      const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-      if (drag.pan) {
-        const az = cam.az * Math.PI / 180, k = cam.dist * 0.0025;
-        const fx = -Math.cos(az), fy = -Math.sin(az), rx = -Math.sin(az), ry = Math.cos(az);
-        cam.tx = drag.tx - rx * dx * k + fx * dy * k; cam.ty = drag.ty - ry * dx * k + fy * dy * k;
-      } else {
-        cam.az = drag.az - dx * 0.3;
-        cam.h = clamp(drag.h + dy * 0.01, 0.02, 30);
-      }
-      moving = true;
+      const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
+      if (drag.pan) rig.dragPan(dx, dy, c.clientHeight); else rig.dragRotate(dx, dy);
     });
-    const end = () => { drag = null; c.style.cursor = 'grab'; settleView(); };
+    const end = () => { drag = null; c.style.cursor = 'grab'; };
     on(c, 'pointerup', end); on(c, 'pointercancel', end);
-    on(c, 'wheel', e => { e.preventDefault(); cam.dist = clamp(cam.dist * Math.exp(e.deltaY * 0.001), 3, 120); moving = true; settleView(); }, { passive: false });
+    on(c, 'wheel', e => {
+      e.preventDefault();
+      const b = c.getBoundingClientRect();
+      const nx = ((e.clientX - b.left) / b.width) * 2 - 1, ny = 1 - ((e.clientY - b.top) / b.height) * 2;
+      rig.zoom(e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY, nx, ny, b.width / Math.max(b.height, 1));
+    }, { passive: false });
     on(c, 'dblclick', () => aimAtStorm());
   }
+  // keys move the camera while the pointer is over the view (or in full screen); typing in a field is left alone
+  let shift = false;
+  const camKeys = (e: KeyboardEvent, down: boolean) => {
+    shift = e.shiftKey;
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!CameraRig.KEYS.has(e.code)) return;
+    if (down && !(viewActive || document.fullscreenElement)) return;
+    e.preventDefault();
+    if (down) rig.keyDown(e.code); else rig.keyUp(e.code);
+  };
+  const kd = (e: KeyboardEvent) => camKeys(e, true), ku = (e: KeyboardEvent) => camKeys(e, false), blur = () => rig.clearKeys();
+  document.addEventListener('keydown', kd); document.addEventListener('keyup', ku); window.addEventListener('blur', blur);
+  cleanup.push(() => { document.removeEventListener('keydown', kd); document.removeEventListener('keyup', ku); window.removeEventListener('blur', blur); });
+
   /** The renderer works in the storm's frame: shift the camera back by how far the storm has travelled. */
   function viewCam(): Camera {
     const [ox, oy] = offset();
-    if (!aimed) aimAtStorm();
-    if ($<HTMLInputElement>('plFollow').checked) { cam.tx! += ox - lastOff[0]; cam.ty! += oy - lastOff[1]; }
+    if (!aimed) aimAtStorm(true);
+    if ($<HTMLInputElement>('plFollow').checked) rig.translate(ox - lastOff[0], oy - lastOff[1]);
     lastOff = [ox, oy];
+    const cam = rig.camera();
     return { ...cam, tx: cam.tx! - ox, ty: cam.ty! - oy, gx: ox, gy: oy };
   }
 
@@ -155,9 +178,9 @@ export function mountStorm(root: HTMLElement): () => void {
   on($('svFull'), 'click', toggleFull);
   const onFs = () => { $('svFull').textContent = document.fullscreenElement === col ? 'Exit full screen' : 'Full screen'; };
   document.addEventListener('fullscreenchange', onFs); cleanup.push(() => document.removeEventListener('fullscreenchange', onFs));
+  // F11 puts the storm view (not the whole page) in full screen where the browser allows it; F is the camera's tilt
   const onKey = (e: KeyboardEvent) => {
-    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
-    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFull(); }
+    if (e.key === 'F11') { e.preventDefault(); toggleFull(); }
   };
   document.addEventListener('keydown', onKey); cleanup.push(() => document.removeEventListener('keydown', onKey));
   cleanup.push(() => { if (document.fullscreenElement === col) void document.exitFullscreen(); });
@@ -172,7 +195,7 @@ export function mountStorm(root: HTMLElement): () => void {
   });
   // hook for automated tests
   (window as unknown as { __stormlab?: unknown }).__stormlab = {
-    captureImage, kind: () => renderer?.kind ?? null, camera: cam, renderer: () => renderer, frame: () => frame, viewCam: () => viewCam(),
+    captureImage, kind: () => renderer?.kind ?? null, rig, renderer: () => renderer, frame: () => frame, viewCam: () => viewCam(),
     setTime: (m: number) => { t = m; setPlaying(false); timeEl.value = String(t); currentFrame(); aimed = false; },
     setPreset: (k: string) => selectPreset(k),
     state: () => ({ t, stage: frame?.stage, tornado: frame?.tornado, preset: st.preset })
@@ -194,13 +217,14 @@ export function mountStorm(root: HTMLElement): () => void {
       const f = currentFrame()!;
       $('svStageName').textContent = f.stage; $('svStageText').textContent = f.caption;
       $('svTorLink').hidden = !(f.tornado > 0.15);
+      rig.update(wallDt, shift);
       if (renderer && !captureOnly) {
         // repaint the volume when storm time moves (at most about 15 times a second); otherwise just advance the spin
         if ((lastBuilt < 0 || Math.abs(t - lastBuilt) > 0.02) && now - lastBuildWall > 66) { renderer.update(f.params); lastBuilt = t; lastBuildWall = now; }
         else renderer.setClock(f.params, now / 1000);
-        renderer.render(viewCam(), moving ? 0.5 : undefined);
-        const az = cam.az * Math.PI / 180;
-        $('svTagL').textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} · ${Math.round(cam.dist)} km`;
+        renderer.render(viewCam(), rig.moving ? 0.5 : undefined);
+        const az = rig.cur.yaw * Math.PI / 180;
+        $('svTagL').textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} · ${Math.round(rig.cur.dist)} km`;
       }
     }
     requestAnimationFrame(loop);
@@ -214,7 +238,7 @@ export function mountStorm(root: HTMLElement): () => void {
   requestAnimationFrame(loop);
 
   // the GPU can drop the device (driver reset, sleep): make a new renderer a couple of times before giving up
-  let retries = 0, orbitBound = false;
+  let retries = 0;
   function makeRenderer() {
     StormRenderer.create($<HTMLCanvasElement>('svGL')).then(r => {
       if (!alive) { r?.destroy(); return; }
@@ -222,7 +246,6 @@ export function mountStorm(root: HTMLElement): () => void {
       $('svGpu').textContent = r ? 'Rendering with WebGPU' : '';
       $('svNoGPU').hidden = !!r;
       if (!r) return;
-      if (!orbitBound) { bindOrbit(r.canvas); orbitBound = true; }
       r.device.lost.then(info => {
         if (!alive || info.reason === 'destroyed' || renderer !== r) return;
         renderer = null;
@@ -230,6 +253,7 @@ export function mountStorm(root: HTMLElement): () => void {
       });
     }).catch(e => { console.error(e); $('svNoGPU').hidden = false; });
   }
+  bindOrbit($<HTMLCanvasElement>('svGL'));
   makeRenderer();
 
   return () => { alive = false; cleanup.forEach(f => { try { f(); } catch { /* ignore */ } }); renderer?.destroy(); };
