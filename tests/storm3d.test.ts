@@ -15,7 +15,7 @@ describe('designed storm', () => {
     assert.equal(plan('hail').kind, 'supercell');
     assert.equal(plan('lp').kind, 'supercell');
     assert.equal(plan('capped').kind, 'capped');
-    assert.notEqual(plan('pulse').kind, 'supercell');
+    assert.ok(plan('pulse').kind !== 'supercell', 'pulse storm should not be a supercell');
   });
 
   test('storms move north-east in south-west flow', () => {
