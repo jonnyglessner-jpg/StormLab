@@ -206,7 +206,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let trumpet = 1.4 * pow(ss(el - 5.0, el - 0.6, p.z), 2.0) * clamp(S.anvil.w, 0.0, 1.0);
     let rad = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.25 * ss(0.4, 0.8, hz) + trumpet, -0.3 * hz * hz, young));
     let n = fbm(p) - 0.5;
-    let lump = mix(0.5, 1.5, ss(1.0, 5.0, zr)) * (1.0 - 0.75 * lam);
+    let lump = mix(0.5, 1.7, ss(1.0, 5.0, zr)) * (1.0 - 0.75 * lam);
     let edge = rad + n * 2.2 * lump;
     // domed top: rounder while the tower is young, flatter once it spreads into the anvil
     let dome = mix(0.9 * rad, 2.2, clamp(S.anvil.w, 0.0, 1.0));
@@ -308,13 +308,16 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let qe = clamp(e, 0.0, 1.0);
     let lens = mix(sqrt(max(1.0 - qe * qe, 0.0)), pow(max(1.0 - qe * qe, 0.0), 0.2), ss(-0.3, -0.8, su));
     // vertical: flat top, a little higher over the updraft; thick near the storm, thin far out
-    let topz = S.anvil2.y + 0.35 * exp(-max(s, 0.0) / 8.0) - 0.3 * fr + n * 0.06;
+    // over the updraft and its upwind side the top bulges up into a dome of turrets; downstream it is flat
+    let headD = length(vec2f(max(-s, 0.0) / max(nb, 0.5), q / max(B, 0.5)));
+    let bulge = (1.2 + 0.8 * n) * exp(-max(s, 0.0) / max(R * 2.0, 1.0)) * (1.0 - ss(0.6, 1.0, headD)) * grow;
+    let topz = S.anvil2.y + 0.35 * exp(-max(s, 0.0) / 8.0) - 0.3 * fr + n * 0.06 + bulge;
     // the backsheared part stays thick, with a sharp edge, its underside sloping down toward the updraft
     let upw = ss(0.0, -nb, s);
     let thick = mix(2.7, 0.3, pow(fr, 0.55)) * mix(1.0, 0.45, upw) * (0.55 + 0.45 * grow) * (0.2 + 0.8 * lens);
     // round the updraft the underside curves down into the tower, so tower and anvil are one smooth surface
     let dA = length(p.xy - a0);
-    let skirtA = 2.2 * exp(-dA / max(R * 1.6, 1.0)) * grow;
+    let skirtA = 2.2 * exp(-dA / max(R * 0.9, 1.0)) * (1.0 - ss(R * 1.2, R * 2.2, dA)) * grow;
     let botz = topz - thick - skirtA + n * 0.5 * thick + streak * 0.2 * fr;
     // a soft top over several grid levels, so the gently sloping top doesn't show a contour line where it crosses one
     let vert = ss(botz - 0.2, botz + 0.35, p.z) * ss(topz + 0.25, topz - 0.55, p.z + streak * 0.25);
@@ -322,8 +325,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let dens = mix(1.0, 0.3, ss(0.05, 0.9, fr)) * (1.0 - ss(0.7, 1.05, fr + streak * 0.2)) * mix(0.6, 1.0, lens);
     let av = inPlan * vert * dens;
     // lumpy knuckles round the head near the updraft; smooth, streaky ice further out
-    let knuckle = (1.0 - ss(3.0, 12.0, s)) * ss(0.35, 0.9, qe);
-    mw += av * av; ms += av * av * mix(icy(0.35 + 0.65 * ss(0.02, 0.3, fr)), water(0.8), 0.85 * knuckle);
+    // the head of the storm, the upwind end and the first stretch downwind, is cauliflower like the tower beneath
+    // it; the texture smooths out into streaky ice further downstream
+    let knuckle = (1.0 - ss(R * 1.5, R * 1.5 + 0.3 * Lz, s)) * (0.6 + 0.4 * ss(0.2, 0.8, qe));
+    mw += av * av; ms += av * av * mix(icy(0.35 + 0.65 * ss(0.02, 0.3, fr)), water(0.9), knuckle);
     cloud = max(cloud, av);
     // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm. Each is a lobe on a
     // jittered grid (about 1.6 km apart), so they read as round bulges rather than a blotchy texture
