@@ -2,11 +2,11 @@
 
 An interactive supercell and tornado simulator for weather education. Pick one of seven severe-weather setups
 (`src/presets.ts`): a Plains tornado outbreak, a big hail day, Dixie Alley HP, Ohio Valley spring, High Plains LP,
-a capped bust day and a summer pulse storm. Then grow the storm in a 3-D cloud model and watch it from the ground
-(chaser view) or on a radar map, with the setup's sounding and hodograph. Any tornado the storm produces opens in a
+a capped bust day and a summer pulse storm. Then watch that setup's storm live out its life in 3-D, from towering
+cumulus to tornado and rope-out, with its sounding and hodograph. Any tornado the storm produces opens in a
 swirl-ratio vortex model.
 
-Everything runs in the browser. The 3-D view renders with **WebGPU** where available and falls back to WebGL2.
+Everything runs in the browser. The storm view needs **WebGPU** (Chrome or Edge).
 
 ## Run it
 
@@ -25,14 +25,37 @@ Pushing to `main` runs the same checks on GitHub and deploys `dist/` to GitHub P
 | --- | --- | --- |
 | Environment | `src/physics/thermo.ts`, `winds.ts`, `environment.ts` | Afternoon sounding (mixed layer, moist layer, cap, lapse rates), mixed-layer parcel with virtual temperature, hodograph, Bunkers storm motion, SRH, SCP, STP |
 | Setups | `src/presets.ts` | The seven environments and what each one shows |
-| Cloud model | `src/sim/` | See below |
-| Rendering | `src/render/chaser-webgpu.ts` | WGSL compute pass lights the volume (sun and sky), render pass ray-marches it over a ground of fields and section roads; `chaser-webgl.ts` is the fallback |
+| Storm | `src/storm3d/design.ts` | Turns the environment into a storm plan and, for any minute of its life, the size and place of each feature (below) |
+| Rendering | `src/storm3d/shaders.ts`, `renderer.ts` | WGSL compute pass paints the storm into a 3-D volume and lights it (sun and sky); render pass ray-marches it over a ground of fields and section roads, with the wall cloud, tail cloud, scud, inflow tail and tornado evaluated at full resolution near the ground |
+| Cloud model | `src/sim/` | Kept in the repo, not on the page (see below) |
 | Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, swirl-ratio regimes, corner flow, suction vortices, condensation funnel, damage swath. `src/physics/storm.ts` turns a simulated tornado into its parameters |
 
-## The cloud model
+## The designed storm
 
-The storm grows in a 3-D cloud model, the same kind of model research groups use
-(CM1, WRF), simplified enough to run in a browser:
+The storm page draws a supercell from the conceptual model spotters and forecasters use (Lemon & Doswell 1979),
+not from a fluid simulation. `planStorm` reads the setup:
+
+| From the setup | Sets |
+| --- | --- |
+| LCL | Cloud base height |
+| CAPE, equilibrium level | Updraft width, storm top, overshooting top |
+| 0–6 km shear | Updraft tilt, whether the storm is a supercell, a pulse storm or nothing (capped) |
+| Storm-relative wind at 9–11 km | Anvil direction and length; where rain falls (LP, classic, HP) |
+| 0–1 km SRH | Mesocyclone, wall cloud size and spin |
+| STP, tornado probability, LCL | Whether there is a tornado, its size and shape (slender, cone, wedge) |
+| Bunkers right-mover | Where the storm goes |
+
+`stormAt` gives every feature's size and place at any minute: towering cumulus (0–14 min), anvil (10–20), rain
+and hail (14–28), striations, inflow tail and flanking line (18–34), then repeating 38-minute cycles of wall cloud,
+rear-flank downdraft and clear slot, tornado (when the setup supports one), rope-out as the storm occludes, and a new
+wall cloud. Pulse storms rain out and collapse; capped setups only bubble.
+
+## The cloud model (off the page)
+
+An earlier version grew the storm in a 3-D cloud model, the same kind of model research groups use
+(CM1, WRF), simplified enough to run in a browser. It reproduced storm strength and rotation but not a storm's
+look (its updrafts, at 0.5–1 km spacing, were too coarse for wall clouds, inflow tails and tornadoes), so the page
+now uses the designed storm. The code and its tests are kept:
 
 | Piece | Where | Details |
 | --- | --- | --- |
@@ -112,15 +135,19 @@ estimate scaled from that circulation.
   quiet, microphysics conserves water and energy, fall speeds, reflectivity and hail sizes are realistic, the hail
   swath lands where the storm motion puts it, and the tornado tracker rules hold.
 
+- **Designed storm:** each setup gets the storm it should (tornadic Plains supercell, capped bust, no tornado from
+  the pulse storm), storms move north-east, and every minute of every storm's life is finite and labelled.
+
 Browser checks (headless Chromium with WebGPU):
+- `tests/browser/storm3d.ts` renders the designed storm at chosen setups, times and camera positions.
 - `tests/browser/sim-compare.ts` runs the CPU and GPU cloud models side by side.
 - `?capture-only` skips on-screen WebGPU presentation, which loses the device in some headless setups.
-- `window.__stormlab.captureImage(w, h)` renders a frame offscreen.
-- `window.__stormlab.sim()` returns the simulation's state.
-- `?renderer=webgl` forces the fallback renderer, and with it the CPU simulation.
+- `window.__stormlab.captureImage(w, h)` renders a frame offscreen; `setPreset(key)`, `setTime(min)` and `camera`
+  set up the shot; `state()` gives the time, stage and tornado strength.
 
 ## Roadmap
 
-1. Storm longevity in moderate-CAPE environments (Ohio Valley, Dixie): storms still fade after about 50–55 minutes.
-2. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
-3. Tornado and wall cloud drawn in the 3-D view, and a storm-following camera for the simulation.
+1. Radar: reflectivity (hook echo, inflow notch) and velocity (couplet) drawn from the same storm, on the radar map.
+2. Teaching layer: a guided tour through the stages, with labels on the storm's features.
+3. A fallback for browsers without WebGPU.
+4. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).

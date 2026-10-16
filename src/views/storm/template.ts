@@ -1,6 +1,6 @@
 /** Markup for the storm view. */
 import { PRESETS } from '../../presets';
-import { SIM_BAR_HTML, SIM_CARD_HTML } from './sim-panel';
+
 
 const presetCards = Object.entries(PRESETS).map(([k, p]) =>
   `<button class="pcard" data-pre="${k}" aria-pressed="false"><b>${p.name}</b><span>${p.blurb}</span></button>`).join('');
@@ -8,30 +8,35 @@ const presetCards = Object.entries(PRESETS).map(([k, p]) =>
 export const STORM_HTML = `
 <div class="wrap">
   <header>
-    <div class="eyebrow">3-D cloud model · ice and hail microphysics · runs on your GPU</div>
+    <div class="eyebrow">Supercell anatomy · from towering cumulus to tornado · drawn on your GPU</div>
     <h1>Supercell Lab</h1>
-    <p class="lede">Pick a severe-weather setup and grow the storm. A cloud model solves the equations of motion for that atmosphere: an updraft breaks through the cap, and the storm organises into a rotating supercell that drops hail and may put down a tornado. Any tornado it makes opens in the Tornado Lab.</p>
+    <p class="lede">Pick a severe-weather setup and watch its storm live out its life: the tower breaking the cap, the anvil, the striated updraft, the inflow tail, the wall cloud, the rear-flank downdraft's clear slot, and the tornado. The setup decides how strong, how wet and how rotating the storm is, and which way it goes.</p>
   </header>
   <section class="bench">
     <div class="stagecol">
       <div class="stage">
         <canvas id="svGL" aria-label="Three-dimensional view of the storm" style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;cursor:grab;touch-action:none"></canvas>
-        <canvas id="svRadar" aria-label="Radar view of the storm" hidden style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;background:#11171a"></canvas>
         <span class="tag tl" id="svTagL">—</span>
         <span class="tag tr" id="svTagR">—</span>
-        <div id="svStart" class="startover"><button type="button" id="svStartBtn">Grow the storm</button><p>Runs for up to two hours of storm time.</p></div>
+        <div id="svStage" class="stagecap" aria-live="polite"><b id="svStageName">—</b><span id="svStageText">—</span><button type="button" id="svTorLink" hidden>Open this tornado in the Tornado Lab</button></div>
+        <div id="svNoGPU" class="startover" hidden><p>This storm view needs WebGPU: Chrome or Edge on a recent computer.</p></div>
       </div>
       <div class="row" style="gap:10px">
-        <div class="seg" role="group" aria-label="View" style="margin-left:0">
-          <button data-v="3d" aria-pressed="true">Chaser view</button><button data-v="radar">Radar</button>
+        <button type="button" id="plPlay" style="min-width:74px">Pause</button>
+        <input type="range" id="plTime" min="0" max="110" step="0.1" value="0" aria-label="Storm time" style="flex:1 1 220px;accent-color:var(--accent)">
+        <output id="plClock" style="font-family:var(--f-mono);font-size:13px;min-width:5ch">0 min</output>
+        <div class="seg" role="group" aria-label="Speed" style="margin-left:0">
+          <button data-speed="0.5">½×</button><button data-speed="1" aria-pressed="true">1×</button><button data-speed="3">3×</button>
         </div>
-        <div class="seg" role="group" aria-label="Radar product" id="svProd" style="margin-left:0">
-          <button data-p="dbz" aria-pressed="true">Reflectivity</button><button data-p="vel">Storm-relative velocity</button><button data-p="hail">Hail swath</button>
+      </div>
+      <div class="row" style="gap:10px">
+        <label title="Keep the camera moving with the storm, like a chaser driving alongside"><input type="checkbox" id="plFollow" checked> Move with the storm</label>
+        <div class="seg" role="group" aria-label="Detail" style="margin-left:0">
+          <button data-q="high" aria-pressed="true">High detail</button><button data-q="low">Faster</button>
         </div>
         <button id="svSave" type="button">Save image</button>
         <span class="gpu-note" id="svGpu"></span>
-      </div>${SIM_BAR_HTML}
-      ${SIM_CARD_HTML}
+      </div>
     </div>
     <aside class="rack" aria-label="Setups">
       <h2>Setups</h2>
@@ -70,24 +75,23 @@ export const STORM_HTML = `
   </section>
   <section class="card notes">
     <div style="display:grid;gap:10px">
-      <h2>What the model does</h2>
+      <h2>How the storm is built</h2>
       <ol>
-        <li><b>Atmosphere.</b> Each setup is a sounding and a hodograph: a well-mixed afternoon boundary layer up to cloud base, a humid layer above it on days with deep moisture, a capping inversion, the setup's mid-level lapse rate, and south-west flow veering with height. CAPE, CIN and helicity are worked out from them the way forecasters do.</li>
-        <li><b>Cloud model.</b> The anelastic equations of motion, with turbulent mixing, on a 3-D grid of 1 km boxes (500 m optional) 400 m deep, about 90 km across, moving with the storm. It is the same kind of model research groups use (CM1, WRF), simplified to run in a browser on your GPU (or, more slowly and coarsely, on the CPU).</li>
-        <li><b>Clouds, rain, ice and hail.</b> Six kinds of water: vapour, cloud droplets, rain, cloud ice, snow and hail, with the processes that turn one into another (condensation, freezing, riming, melting, evaporation) and their own fall speeds. Evaporating rain and melting hail make the cold outflow.</li>
-        <li><b>Start.</b> For the first 15 minutes one broad updraft (about 20 km across) is pushed up from the boundary layer, the standard way research models start a storm. Everything after that, the tower breaking the cap, the anvil, the mesocyclone, the hook and the hail, comes out of the equations.</li>
-        <li><b>Radar and tornadoes.</b> Reflectivity is computed from the rain, snow and hail; velocity from the winds along the radar beam. A 1 km grid can't resolve a tornado, so one is flagged when strong rotation near the ground sits under the updraft for a minute, and its strength is estimated from that rotation.</li>
+        <li><b>Atmosphere.</b> Each setup is a sounding and a hodograph: a well-mixed afternoon boundary layer up to cloud base, a humid layer above it on days with deep moisture, a capping inversion, the setup's mid-level lapse rate, and south-west flow veering with height. CAPE, CIN, helicity and the composite parameters are worked out from them the way forecasters do.</li>
+        <li><b>From atmosphere to storm.</b> Instability sets the updraft's strength and width; storm-relative winds aloft set the anvil's direction and whether rain falls far from the updraft (LP), next to it (classic) or wraps around it (HP); low-level helicity sets the mesocyclone, the wall cloud and the tornado; the Bunkers right-mover sets where the storm goes.</li>
+        <li><b>Anatomy.</b> The storm is built from the supercell model forecasters and spotters use (Lemon &amp; Doswell 1979): updraft and overshooting top, anvil with mammatus, flanking line, striated rain-free base, inflow tail, wall cloud with tail cloud and scud, forward-flank rain and hail, and the rear-flank downdraft whose clear slot wraps around the wall cloud.</li>
+        <li><b>Life cycle.</b> Towering cumulus, cumulonimbus, a rotating supercell, a wall cloud, the rear-flank surge, a tornado, its rope-out as the storm occludes, and a new cycle.</li>
+        <li><b>Tornado.</b> Whether one forms, its size and its shape (slender, cone or wedge) come from the setup's Significant Tornado Parameter and cloud base, using the same climatology as the Tornado Lab.</li>
       </ol>
     </div>
     <div style="display:grid;gap:10px">
       <h2>Limits</h2>
       <ul>
-        <li>The environment is the same everywhere and doesn't change: no fronts, drylines, terrain, daytime heating or neighbouring storms.</li>
-        <li>The grid resolves the storm and its mesocyclone, not the tornado. Tornado strength is an estimate.</li>
-        <li>Each kind of water has a fixed size distribution, so hail tops out near 2 inches and hail cores read high on radar.</li>
-        <li>Storms in modest instability (Ohio Valley, Dixie) tend to fade after about 50 minutes.</li>
+        <li>The storm is drawn from how supercells are observed to look and behave, not solved from the equations of motion. Its parts are in the right places at the right times, but their turbulence is drawn, not simulated.</li>
+        <li>Every storm in a setup follows the same life cycle. Real storms vary: many supercells never produce a tornado, and some produce several.</li>
+        <li>No terrain, fronts or neighbouring storms.</li>
       </ul>
-      <p class="refs">Klemp &amp; Wilhelmson (1978) and Bryan &amp; Fritsch (2002) for the model equations; Lin, Farley &amp; Orville (1983), Tao et al. (1989) and Gilmore et al. (2004) for the microphysics; Naylor &amp; Gilmore (2012) for the start; Thompson et al. (2003, 2012) for SCP and STP; Bunkers et al. (2000) for storm motion.</p>
+      <p class="refs">Lemon &amp; Doswell (1979) for supercell structure; Rasmussen &amp; Straka (1998) for LP, classic and HP storms; Thompson et al. (2003, 2012) for SCP and STP; Bunkers et al. (2000) for storm motion.</p>
     </div>
   </section>
 </div>`;
