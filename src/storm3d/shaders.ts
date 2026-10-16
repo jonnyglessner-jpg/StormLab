@@ -280,30 +280,45 @@ fn groundColor(p: vec2f, dist: f32) -> vec3f {
   return mix(gc, vec3f(0.44, 0.42, 0.37), road * detail);
 }
 
-// the tornado, drawn analytically: condensation funnel (x) and debris (y), extinction 1/km
+// the tornado, drawn analytically. x: condensation funnel as a cloud field (0..1, same scale as nearField, so the
+// funnel is drawn as part of the wall cloud: same threshold, same light, merging into it); y: debris, extinction 1/km
 fn tornado(q: vec3f) -> vec2f {
   let zb = S.base.x;
-  if (S.tor.z <= 0.0 || q.z > zb + 0.1) { return vec2f(0.0); }
-  // the funnel flares to its top radius where it meets the lowered wall cloud, not at the main cloud base
-  let ztop = max(zb - 0.5 * S.wall2.x, 0.3);
+  if (S.tor.z <= 0.0 || q.z > zb + 0.15) { return vec2f(0.0); }
+  // the funnel reaches its top radius where it meets the lowered wall cloud, then keeps going up into the base
+  let ztop = max(zb - 0.6 * S.wall2.x, 0.3);
   let h = clamp(q.z / ztop, 0.0, 1.0);
   let clock = S.base.z;
   // axis from the ground position up to the wall cloud, with a slow sway that grows as it ropes out
-  let sway = (0.06 + 0.4 * S.tor2.w) * vec2f(sin(h * 6.0 + clock * 0.35), cos(h * 4.5 + clock * 0.28)) * sin(3.1416 * h);
-  let ax = mix(S.tor.xy, S.tor3.xy, pow(h, 0.8)) + sway;
+  let sway = (0.05 + 0.3 * S.tor2.w) * vec2f(sin(h * 6.0 + clock * 0.35), cos(h * 4.5 + clock * 0.28)) * sin(3.1416 * h);
+  let ax = mix(S.tor.xy, S.tor3.xy, smoothstep(0.08, 0.8, h)) + sway;   // near-vertical where it leaves the ground and where it enters the cloud
   let dv = q.xy - ax; let d = length(dv);
-  let rad = mix(S.tor2.x, S.tor2.y, pow(h, mix(3.0, 0.7, S.tor.w)));
-  let ang = atan2(dv.y, dv.x);
-  // rotating, ragged texture on the funnel's skin
-  let sp = n3(vec3f(ang * 0.32 - clock * 0.9 + q.z * 1.4, d * 3.0, q.z * 0.9));
+  var rad = mix(S.tor2.x, S.tor2.y, pow(h, mix(3.0, 0.7, S.tor.w)));
+  // collar: the funnel widens smoothly into a cone-shaped lowering under the wall cloud, so the two are one cloud
+  let collar = smoothstep(ztop - 0.45 * ztop, ztop + 0.1, q.z);
+  rad += collar * collar * (0.25 * S.wall.z + 0.3 * S.tor2.y) * (1.0 - 0.4 * S.tor2.w);
+  // texture in a frame turning with the vortex: vertical striations and a ragged skin, scaled to the funnel
+  let rot = clock * 0.9;
+  let cs = cos(rot); let sn = sin(rot);
+  let pr = vec2f(cs * dv.x - sn * dv.y, sn * dv.x + cs * dv.y) / max(rad, 0.04);
+  let n1 = n3(vec3f(pr * 0.9, q.z * 1.1 - clock * 0.15));
+  let n2 = n3(vec3f(pr * 2.6, q.z * 5.0) + vec3f(0.31, 0.77, 0.13));
+  let rough = (n1 - 0.5) * 0.45 + (n2 - 0.5) * 0.3;
+  // condensation reaches down to condBottom; below it the funnel thins into a translucent sheath
   let condBottom = zb * (1.0 - S.tor2.z);
-  let funnel = S.tor.z * smoothstep(rad * 1.08, rad * 0.75, d + (sp - 0.5) * rad * 0.5) * smoothstep(condBottom - 0.04, condBottom + 0.08, q.z) * smoothstep(ztop + 0.35, ztop + 0.05 - 0.3 * S.tor2.w, q.z) * 45.0;
-  // debris cloud at the ground, wider than the funnel
-  let dr = S.tor2.x * 2.6 + 0.06; let dh = 0.1 + 0.25 * S.tor.w * (1.0 - S.tor2.w);
-  let dn = n3(vec3f(ang * 0.5 - clock * 1.2, d * 4.0, q.z * 3.0) + vec3f(0.3, 0.1, 0.7));
-  let debris = S.tor3.z * smoothstep(dr, dr * 0.35, d + (dn - 0.5) * dr * 0.7) * smoothstep(dh, dh * 0.25, q.z) * 14.0;
+  let down = smoothstep(condBottom - 0.06, condBottom + 0.12, q.z);
+  let core = smoothstep(1.25, 0.45, d / rad + rough);
+  let funnel = min(S.tor.z * 2.5, 1.0) * core * mix(0.55, 1.0, down) * mix(0.75, 1.0, smoothstep(0.0, 0.35, h));
+  // debris and dust: a whirl at the ground, wider than the funnel, rising as a sheath around its lower part
+  let dr = S.tor2.x * 2.4 + 0.06; let dh = 0.08 + 0.22 * S.tor.w * (1.0 - S.tor2.w);
+  let dn = n3(vec3f(pr * 0.7 * rad / dr, q.z * 2.5) + vec3f(0.3, 0.1, 0.7));
+  let whirl = smoothstep(dr, dr * 0.3, d + (dn - 0.5) * dr * 0.8) * smoothstep(dh, dh * 0.15, q.z);
+  let sheath = smoothstep(rad * 1.9, rad * 1.0, d + (dn - 0.5) * rad * 0.6) * smoothstep(0.35 * zb, 0.0, q.z) * 0.35;
+  let debris = S.tor3.z * (whirl + sheath) * 7.0;
   return vec2f(funnel, debris);
 }
+
+fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; return max(a, b) + h * h * k * 0.25; }
 
 @fragment fn fs(@builtin(position) fc: vec4f) -> @location(0) vec4f {
   let res = U.a.xy;
@@ -318,7 +333,7 @@ fn tornado(q: vec3f) -> vec2f {
   let sunc = vec3f(1.0, 0.92, 0.78); let skyc = vec3f(0.46, 0.56, 0.7);
   let hazec = vec3f(0.66, 0.7, 0.75);
   // tornado bounding cylinder
-  let torR = max(S.tor2.y, S.tor2.x * 2.6 + 0.06) + 0.5;
+  let torR = max(S.tor2.y * 1.3 + 0.25 * S.wall.z, S.tor2.x * 2.4 + 0.06) * 1.2 + 0.4;
   let torC = 0.5 * (S.tor.xy + S.tor3.xy);
   var col = vec3f(0.0); var T = 1.0;
   if (tb > ta) {
@@ -355,12 +370,18 @@ fn tornado(q: vec3f) -> vec2f {
         let c = sunc * (lt.r * ph * 1.9) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) + bounce;
         be += bc; Lc += c * bc;
       }
-      if (nearOn) {
-        let nv = nearField(q, 1.0);
+      var tv = vec2f(0.0);
+      if (nearTor) { tv = tornado(q); }
+      if (nearOn || tv.x > 0.0) {
+        // the wall cloud and the funnel are one cloud: smooth union, then the same threshold and light
+        let nw = select(0.0, nearField(q, 1.0), nearOn);
+        let nv = smax(nw, tv.x, 0.15);
         let bn = smoothstep(0.22, 0.38, nv) * U.a.w * 0.8;
         if (bn > 0.0) {
+          // the funnel's own share is a little darker and cooler, as condensation in the vortex usually looks
+          let fs = clamp((tv.x - nw) * 3.0 + 0.5, 0.0, 1.0) * step(0.001, tv.x);
           let c = sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g) + vec3f(0.3, 0.33, 0.27) * 0.45;
-          be += bn; Lc += c * vec3f(0.72, 0.76, 0.82) * bn;
+          be += bn; Lc += c * mix(vec3f(0.72, 0.76, 0.82), vec3f(0.6, 0.64, 0.7), fs) * bn;
         }
       }
       if (s.g > 0.004) {
@@ -370,12 +391,10 @@ fn tornado(q: vec3f) -> vec2f {
         let pc = mix(vec3f(0.55, 0.6, 0.66), vec3f(0.8, 0.88, 0.86), clamp(hw, 0.0, 1.0)) * (sunc * lt.r * 0.9 + skyc * (0.35 + 0.5 * lt.g));
         be += br; Lc += pc * br;
       }
-      if (nearTor) {
-        let tv = tornado(q);
-        if (tv.x + tv.y > 0.0) {
-          let tl = sunc * lt.r * 0.7 + skyc * (0.22 + 0.5 * lt.g);
-          be += tv.x + tv.y; Lc += tl * vec3f(0.72, 0.74, 0.76) * tv.x + tl * vec3f(0.42, 0.34, 0.26) * tv.y;
-        }
+      if (tv.y > 0.0) {
+        // dust and debris: lit like the ground beneath, fading into the haze
+        let tl = sunc * lt.r * 0.8 + skyc * (0.3 + 0.5 * lt.g) + vec3f(0.3, 0.33, 0.27) * 0.3;
+        be += tv.y; Lc += tl * vec3f(0.5, 0.44, 0.37) * tv.y;
       }
       if (be > 0.0005) {
         let a = 1.0 - exp(-be * dt);

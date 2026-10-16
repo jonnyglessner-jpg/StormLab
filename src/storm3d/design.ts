@@ -135,7 +135,7 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
         torTop = (P.torR * (P.torType > 0.7 ? 1.4 : 2.6) + 0.12) * (1 - 0.6 * rope);
         // tornado under the rear-right part of the wall cloud; it's left behind as the storm occludes (rope out)
         torTopP = [wc[0] + (-0.35 * fx - 0.35 * lx) * P.Rw, wc[1] + (-0.35 * fy - 0.35 * ly) * P.Rw];
-        const drift = 1.6 * rope;
+        const drift = 1.1 * rope;
         torBot = [torTopP[0] + (-fx * 0.8 - lx * 0.6) * drift, torTopP[1] + (-fy * 0.8 - ly * 0.6) * drift];
         torOn = torAmt;
       }
