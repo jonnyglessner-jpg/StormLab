@@ -102,10 +102,14 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       let north = smoothstep(0.3, 1.0, cos(th - 0.9)); let south = smoothstep(0.5, 1.0, cos(th + 2.97));
       let D = (0.3 + 0.15 * south + 0.25 * north + 0.4 * S.wall2.x * north) * (0.75 + 0.5 * nl);
       // radial profile: x < 0 toward the slot (steep face), x > 0 outward (rising into the base)
+      // a wedge of rising cloud: its underside slants up on both sides, gently toward the slot and more gently
+      // outward into the base, not a vertical cliff
       let x = rb - Rs + (nl - 0.5) * 0.7;
-      let prof = smoothstep(-0.6, -0.25, x) * (1.0 - smoothstep(0.1, 1.6, x));
-      let bot = zb - D * prof - (nl - 0.5) * 0.15;
-      let lip = am * step(0.02, prof) * smoothstep(bot - 0.04, bot + 0.08, p.z) * smoothstep(zb + 0.55, zb + 0.2, p.z);
+      let prof = clamp(1.0 - max(-x, 0.0) / 1.1 - max(x, 0.0) / 2.2, 0.0, 1.0);
+      let bot = zb - D * prof * prof * (3.0 - 2.0 * prof) - (nl - 0.5) * 0.2;
+      // soft, ragged underside: density fades over a few hundred metres, with wisps hanging below
+      let wisp = mix(0.5, n3(vec3f(dl * 3.0, p.z * 6.0) + vec3f(0.4, 0.9, 0.2)), fine);
+      let lip = am * step(0.01, prof) * smoothstep(bot - 0.12 - wisp * 0.12, bot + 0.22, p.z) * smoothstep(zb + 0.55, zb + 0.2, p.z);
       v = max(v, S.rfdb.w * lip);
     }
   }
@@ -166,7 +170,9 @@ fn congestus(p: vec3f, c: vec2f, R: f32, zb: f32, zt: f32, seed: f32) -> f32 {
   // a tower that narrows upward into a lumpy, turreted head
   let edge = R * (0.95 - 0.35 * hz * hz) + n * R * 0.8;
   let top = zt - 1.1 * R * pow(min(r / max(R, 0.1), 1.4), 2.0) + n * R * 1.0;
-  return ss(0.45, -0.45, r - edge) * ss(zb - 0.05, zb + 0.12, p.z) * ss(top + 0.25, top - 0.45, p.z);
+  // a soft, ragged base, a little higher toward the tower's edge (air rising into it), not a flat cut
+  let zbt = zb + 0.15 * clamp(r / max(R, 0.1), 0.0, 1.2) + n * 0.3;
+  return ss(0.45, -0.45, r - edge) * ss(zbt - 0.15, zbt + 0.3, p.z) * ss(top + 0.25, top - 0.45, p.z);
 }
 
 @compute @workgroup_size(4, 4, 4)
@@ -207,7 +213,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // where the side slopes gently (the skirt) the edge moves a long way per grid level: widen the ramp to match, or
     // the surface shows terraces at every level
     let ew = 0.55 + 0.05 * R * (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0));
-    var tw = ss(ew, -ew, r - edge) * ss(zb - 0.05, zb + 0.15, p.z) * ss(top + 0.3, top - 0.6, p.z);
+    // the underside: rising air condensing unevenly, so not a knife-edge plane. Ragged, soft, and sloping up away
+    // from the updraft core toward the rim of the skirt
+    let nb = n3(p * 0.45 + vec3f(0.3, 0.8, 0.5)) - 0.5;
+    let zbase = zb + 0.35 * clamp((r - R * 0.8) / max(R, 0.5), 0.0, 1.5) + nb * 0.3;
+    var tw = ss(ew, -ew, r - edge) * ss(zbase - 0.2, zbase + 0.35, p.z) * ss(top + 0.3, top - 0.6, p.z);
     // overshooting top: a dome pushing up through the anvil, rising as the updraft matures
     let oh = 1.8 * S.tilt.z;
     let od = length(vec3f(d / max(R * 0.75, 0.5), (p.z - el) / max(oh, 0.2)));
@@ -339,7 +349,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let off = dot(rel, rn) - 0.03 * al * al;
       let nb = n3(p * 0.7 + vec3f(0.9, 0.3, 0.1)) - 0.5;
       let sh = ss(1.1, 0.5, abs(off) + nb * 0.8) * ss(R * 0.5, R + 0.5, al) * ss(reach - 0.5, reach - 2.5, al)
-        * ss(zb - 0.05, zb + 0.1, p.z) * ss(zb + 0.6 + nb * 0.4, zb + 0.2, p.z) * 0.7;
+        * ss(zb - 0.1 + nb * 0.3, zb + 0.3 + nb * 0.3, p.z) * ss(zb + 0.8 + nb * 0.4, zb + 0.35, p.z) * 0.7;
       mw += sh * sh; ms += sh * sh * water(0.6);
       cloud = max(cloud, sh);
     }
@@ -577,7 +587,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             let udr = rot2(ud, -S.tilt.w * S.base.z);
             let qr = vec3f(uc + udr, q.z);
             nn = mix(nn, detail(qr, turb, lod), m);
-            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(-0.2, 0.15, zr);
+            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(0.4, 1.0, zr);   // on the sides, not the ragged base
             // only on the updraft's own surface, not on flanking towers that come within reach
             let own = 1.0 - smoothstep(0.75 * radAt, 1.05 * radAt, ur);   // not on the thin rim of the skirt, where grooves would cut teeth
             if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2))); }
@@ -590,7 +600,8 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
           nn = mix(nn, fib, ice);
         }
         let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.5, ice) - 0.25 * stri;
-        let ddW = smoothstep(0.26, 0.4, v) * (0.4 + 0.6 * smoothstep(0.4, 0.75, v));
+        let lowSoft = 1.0 - smoothstep(S.base.x + 0.2, S.base.x + 0.8, q.z);   // undersides: soft and ragged
+        let ddW = mix(smoothstep(0.26, 0.4, v), smoothstep(0.18, 0.55, v), lowSoft) * (0.4 + 0.6 * smoothstep(0.4, 0.75, v));
         let ddI = smoothstep(0.18, 0.8, v) * 0.6;
         let dd = mix(ddW, ddI, ice);
         surf = T > 0.25 && v > 0.15;
@@ -627,7 +638,8 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         let nv = smax(nw, tv.x, 0.15);
         // the funnel's own share: a softer, more translucent edge than the wall cloud, a little darker and cooler
         let fs = clamp((tv.x - nw) * 3.0 + 0.5, 0.0, 1.0) * step(0.001, tv.x);
-        let bn = mix(smoothstep(0.22, 0.38, nv), smoothstep(0.12, 0.6, nv) * 0.75, fs) * U.a.w * 0.8;
+        let lowN = 1.0 - smoothstep(S.base.x - 0.1, S.base.x + 0.3, q.z);
+        let bn = mix(mix(smoothstep(0.22, 0.38, nv), smoothstep(0.14, 0.55, nv), 0.6 * lowN), smoothstep(0.12, 0.6, nv) * 0.75, fs) * U.a.w * 0.8;
         if (bn > 0.0) {
           // lowered cloud is lit mostly from the side and below: darker the further it hangs under the base
           let under = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
