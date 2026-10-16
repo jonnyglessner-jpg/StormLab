@@ -123,7 +123,9 @@ export class StormRenderer {
 
   /** Draw a frame; `scale` is the internal resolution relative to CSS pixels. */
   render(cam: Camera, scale?: number): void {
-    const s = scale ?? Math.min(window.devicePixelRatio || 1, 1.25);
+    // cap the pixel count (about 1.6 megapixels) so full screen on a big display stays smooth
+    const cw = Math.max(1, this.canvas.clientWidth), ch = Math.max(1, this.canvas.clientHeight);
+    const s = scale ?? Math.min(window.devicePixelRatio || 1, 1.25, Math.sqrt(1.6e6 / (cw * ch)));
     const W = Math.max(1, Math.round(this.canvas.clientWidth * s)), H = Math.max(1, Math.round(this.canvas.clientHeight * s));
     if (this.canvas.width !== W || this.canvas.height !== H) { this.canvas.width = W; this.canvas.height = H; }
     this.writeCamera(cam, W, H);

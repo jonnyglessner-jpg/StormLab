@@ -149,6 +149,19 @@ export function mountStorm(root: HTMLElement): () => void {
     renderer.update(f.params); lastBuilt = t;
     return renderer.capture(viewCam(), W, H);
   }
+  /* ---------- full screen ---------- */
+  const col = $('svCol');
+  const toggleFull = () => { if (document.fullscreenElement) void document.exitFullscreen(); else void col.requestFullscreen?.(); };
+  on($('svFull'), 'click', toggleFull);
+  const onFs = () => { $('svFull').textContent = document.fullscreenElement === col ? 'Exit full screen' : 'Full screen'; };
+  document.addEventListener('fullscreenchange', onFs); cleanup.push(() => document.removeEventListener('fullscreenchange', onFs));
+  const onKey = (e: KeyboardEvent) => {
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === 'f' || e.key === 'F') { e.preventDefault(); toggleFull(); }
+  };
+  document.addEventListener('keydown', onKey); cleanup.push(() => document.removeEventListener('keydown', onKey));
+  cleanup.push(() => { if (document.fullscreenElement === col) void document.exitFullscreen(); });
+
   on($('svSave'), 'click', async () => {
     const img = await captureImage(1920, 1200);
     if (!img) return;

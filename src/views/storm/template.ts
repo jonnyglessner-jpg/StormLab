@@ -13,7 +13,7 @@ export const STORM_HTML = `
     <p class="lede">Pick a severe-weather setup and watch its storm live out its life: the tower breaking the cap, the anvil, the striated updraft, the inflow tail, the wall cloud, the rear-flank downdraft's clear slot, and the tornado. The setup decides how strong, how wet and how rotating the storm is, and which way it goes.</p>
   </header>
   <section class="bench">
-    <div class="stagecol">
+    <div class="stagecol" id="svCol">
       <div class="stage">
         <canvas id="svGL" aria-label="Three-dimensional view of the storm" style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;cursor:grab;touch-action:none"></canvas>
         <span class="tag tl" id="svTagL">—</span>
@@ -33,6 +33,7 @@ export const STORM_HTML = `
         <div class="seg" role="group" aria-label="Detail" style="margin-left:0">
           <button data-q="high" aria-pressed="true">High detail</button><button data-q="low">Faster</button>
         </div>
+        <button id="svFull" type="button" title="Full screen (F); Esc to leave">Full screen</button>
         <button id="svSave" type="button">Save image</button>
         <span class="gpu-note">Drag to orbit · right-drag to pan · scroll to zoom · double-click to find the storm</span>
         <span class="gpu-note" id="svGpu"></span>

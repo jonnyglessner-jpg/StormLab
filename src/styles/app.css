@@ -129,3 +129,10 @@ code{font-family:var(--f-mono);font-size:12.5px}
 .stagecap b{font-family:var(--f-display);font-size:15px;font-weight:600}
 .stagecap span{font-size:13.5px;line-height:1.45}
 .stagecap button{margin-top:4px;font-size:12.5px}
+
+/* full screen: the storm fills the screen, the caption and player sit in a strip along the bottom */
+.stagecol:fullscreen{display:flex;flex-direction:column;gap:8px;padding:10px 14px 12px;background:var(--bg,#111);box-sizing:border-box;width:100vw;height:100vh}
+.stagecol:fullscreen .stage{flex:1 1 auto;min-height:0;border-radius:6px}
+.stagecol:fullscreen #svGL{height:100%!important;aspect-ratio:auto!important;min-height:0!important}
+.stagecol:fullscreen .stagecap{min-height:0}
+.stagecol:fullscreen .gpu-note{display:none}
