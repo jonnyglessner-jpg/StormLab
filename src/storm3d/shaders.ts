@@ -103,7 +103,7 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
     // northern arm running into the wall cloud and its southern arm ending in the anticyclonic curl. Thick and deep:
     // a steep, ragged face toward the slot, rising more gently outward into the base
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
-    if (abs(rb - Rs) < 2.2 && p.z < zb + 0.6 && p.z > zb - 1.0) {
+    if (abs(rb - Rs) < 2.2 && p.z < zb + 1.3 && p.z > zb - 1.0) {
       let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));     // the arc runs from -170 deg (south arm) through the east to +60 (north arm)
       let am = smoothstep(-0.55, -0.33, cos(th + 0.96));
       let dl = rot2(db, -0.06 * clock);
@@ -114,12 +114,15 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       // a wedge of rising cloud: its underside slants up on both sides, gently toward the slot and more gently
       // outward into the base, not a vertical cliff
       let x = rb - Rs + (nl - 0.5) * 0.7;
-      let prof = clamp(1.0 - max(-x, 0.0) / 1.1 - max(x, 0.0) / 2.2, 0.0, 1.0);
+      let prof = clamp(1.0 - max(-x, 0.0) / 1.1 - max(x, 0.0) / 0.9, 0.0, 1.0);
       let bot = zb - D * prof * prof * (3.0 - 2.0 * prof) - (nl - 0.5) * 0.2;
       // soft, ragged underside: density fades over a few hundred metres, with wisps hanging below
       let wisp = mix(0.5, n3(vec3f(dl * 3.0, p.z * 6.0) + vec3f(0.4, 0.9, 0.2)), fine);
-      let lip = am * step(0.01, prof) * smoothstep(bot - 0.12 - wisp * 0.12, bot + 0.22, p.z) * smoothstep(zb + 0.55, zb + 0.2, p.z);
-      v = max(v, S.rfdb.w * lip);
+      let lip = am * step(0.01, prof) * smoothstep(bot - 0.12 - wisp * 0.12, bot + 0.22, p.z) * smoothstep(zb + 1.2, zb + 0.6, p.z);   // its top inside the meso's base
+      // the lip is the rolled underside of the mesocyclone's rim: none of it sticks out beyond the cloud above
+      let mR0 = S.tower.y * 1.05 + mesoExtra(0.0);
+      let cover = smoothstep(mR0 + 0.2, mR0 - 1.2, length(p.xy - mesoCentre(0.0)));
+      v = max(v, S.rfdb.w * lip * cover);
     }
   }
   if (S.anti.z > 0.0) {
@@ -147,7 +150,7 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       // a deep band near the storm (a kilometre or more), rising as it is drawn up into the updraft's vault,
       // thinning and lowering to a ragged ribbon far out
       let near = (1.0 - fr) * (1.0 - fr);
-      let wt = mix(2.6, 0.5, fr); let zc = zb + 0.2 + 1.1 * near; let th = mix(0.25, 1.0, near);
+      let wt = mix(2.6, 0.35, pow(fr, 0.7)); let zc = zb + 0.2 + 1.1 * near; let th = mix(0.15, 1.0, near);
       let inT = smoothstep(-0.6, 0.6, s) * (1.0 - smoothstep(S.tail.z * 0.8, S.tail.z, s + (n - 0.5) * 4.0))
         * smoothstep(wt, wt * 0.45, abs(qq) + (n - 0.5) * 0.9) * smoothstep(th, th * 0.4, abs(p.z - zc) + (n - 0.5) * 0.12);
       v = max(v, S.tail.w * inT * 0.85);
@@ -208,7 +211,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (S.tower.z > 0.0) {
     let H = max(zt - zb, 0.5);
     let hz = clamp(zr / H, 0.0, 1.0);
-    let lam = S.tower.w * (1.0 - ss(3.0, 6.0, zr));                 // how laminar (striated) the updraft is here
+    let lam = clamp(1.7 * S.tower.w, 0.0, 1.0) * (1.0 - ss(4.0, 7.5, zr));   // how laminar (striated) the updraft is here
     let young = 1.0 - clamp(S.anvil.w, 0.0, 1.0);
     // the base of a mature supercell is broad: the rotating updraft spreads out into a wide, sloping skirt of
     // striated cloud just above cloud base (the 'mothership'), widest at the bottom
@@ -306,9 +309,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let sT = dot(p.xy - t0, td) + R * 0.6;                       // 0 at the updraft's edge, increasing outward
     let qT = dot(p.xy - t0, tn) - 0.035 * (S.tail.z - sT) * (S.tail.z - sT) * 0.12;
     if (sT > -1.0 && sT < 9.0) {
-      let rise = exp(-max(sT, 0.0) / 2.6);
+      let rise = exp(-max(sT, 0.0) / 3.5);
       let nI = fbm(p * 1.3 + vec3f(1.7, 0.4, 2.2)) - 0.5;
-      let topI = zb + 0.45 + 3.0 * rise + nI * 0.4;
+      let topI = zb + 0.7 + 3.4 * rise + nI * 0.4;
       let botI = zb + 0.12 + 0.25 * (1.0 - rise) + nI * 0.15;
       let wI = (1.0 + 2.2 * rise) * (0.8 + 0.4 * nI);
       // laminar bands along the inflow
@@ -665,7 +668,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
       let tc = uvw(q);
       let s = textureSampleLevel(dens, samp, tc, 0.0);
       // near-ground features: fine steps where the coarse copy says they are
-      let nearOn = s.b > 0.05 && q.z < S.base.x + 0.5;
+      let nearOn = s.b > 0.05 && q.z < S.base.x + 1.2;
       if (surf) { dt = min(dt, 0.025 + t * 0.0015); }
       if (nearTor || nearAnti) { dt = 0.02 + t * 0.0006; }
       else if (nearOn) { dt = min(dt, 0.035 + t * 0.003); }
@@ -693,7 +696,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             let udr = rot2(ud, -S.tilt.w * S.base.z);
             let qr = vec3f(uc + udr, q.z);
             nn = mix(nn, detail(qr, turb, lod), m);
-            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(0.15, 0.7, zr);   // on the sides, not the ragged base
+            let lam = clamp(1.7 * S.tower.w, 0.0, 1.0) * (1.0 - smoothstep(4.0, 7.5, zr)) * smoothstep(0.15, 0.7, zr);   // on the sides, not the ragged base
             // only on the updraft's own surface, not on flanking towers that come within reach
             let own = 1.0 - smoothstep(0.75 * radAt, 1.05 * radAt, ur);   // not on the thin rim of the skirt, where grooves would cut teeth
             if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2)), vaultAngle(ud)); }
@@ -782,7 +785,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         let bn = mix(mix(smoothstep(0.22, 0.38, nv), smoothstep(0.14, 0.55, nv), 0.6 * lowN), smoothstep(0.12, 0.6, nv) * 0.75, fs) * U.a.w * 0.8;
         if (bn > 0.0) {
           // lowered cloud is lit mostly from the side and below: darker the further it hangs under the base
-          let under = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
+          let under0 = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
+          // under the storm's base the low cloud is in deep shade: dense cloud just above it hides sun and sky
+          let ovh = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.7)), 0.0).r;
+          let under = under0 * (1.0 - 0.6 * clamp((ovh - 0.3) * 2.5, 0.0, 1.0));
           let c = (sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g)) * under + vec3f(0.27, 0.29, 0.3) * 0.45;
           be += bn; Lc += c * mix(vec3f(0.72, 0.76, 0.82), vec3f(0.6, 0.64, 0.7), fs) * bn;
         }
