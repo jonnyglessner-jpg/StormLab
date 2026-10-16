@@ -303,7 +303,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let Bq = B * (1.0 - 0.18 * su);
     let e = length(vec2f(su, q / max(Bq, 0.5)));
     let outD = (e - 1.0) * min(Bq, A);
-    let inPlan = ss(1.0, -1.6, outD + n * 1.5 + streak * (0.6 + 1.2 * fr));
+    let inPlan = ss(1.4, -2.0, outD + n * 1.0 + streak * (0.5 + 1.0 * fr));
     // cross-section: a lens, thinning to feathered edges (but a sharp, steep edge upwind)
     let qe = clamp(e, 0.0, 1.0);
     let lens = mix(sqrt(max(1.0 - qe * qe, 0.0)), pow(max(1.0 - qe * qe, 0.0), 0.2), ss(-0.3, -0.8, su));
@@ -333,7 +333,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm. Each is a lobe on a
     // jittered grid (about 1.6 km apart), so they read as round bulges rather than a blotchy texture
     if (S.anvil2.z > 0.0 && fr > 0.03 && fr < 0.6) {
-      let cs = 1.6;
+      let cs = 3.4;   // large enough for the volume grid to resolve them as round, not blocky
       let g = p.xy / cs; let gi = floor(g);
       var dep = 0.0;
       for (var oy = -1; oy <= 1; oy++) {
@@ -341,14 +341,14 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
           let c = gi + vec2f(f32(ox), f32(oy));
           let h1 = hash1(c.x * 17.3 + c.y * 91.7); let h2 = hash1(c.x * 43.1 + c.y * 7.9); let h3 = hash1(c.x * 5.7 + c.y * 61.3);
           let ctr = (c + vec2f(0.2 + 0.6 * h1, 0.2 + 0.6 * h2)) * cs;
-          let rr = cs * (0.32 + 0.22 * h3);
+          let rr = cs * (0.34 + 0.2 * h3);
           let d = length(p.xy - ctr) / rr;
-          dep = max(dep, rr * 0.8 * sqrt(max(1.0 - d * d, 0.0)) * step(0.25, h3));
+          dep = max(dep, rr * 0.35 * (1.0 - d * d) * step(0.3, h3) * step(d, 1.0));
         }
       }
       let band = ss(0.03, 0.1, fr) * (1.0 - ss(0.4, 0.6, fr)) * lens;
       let depth = 0.45 * S.anvil2.z * band * dep;
-      let mv = 0.85 * inPlan * step(0.03, depth) * ss(botz - depth - 0.04, botz - depth + 0.1, p.z) * (1.0 - ss(botz + 0.05, botz + 0.3, p.z));
+      let mv = 0.85 * inPlan * ss(botz - depth - 0.15, botz - depth + 0.2, p.z) * (1.0 - ss(botz + 0.05, botz + 0.3, p.z)) * ss(0.02, 0.12, depth);
       mw += mv * mv; ms += mv * mv * icy(0.95);   // shaded like the anvil's underside, not as separate dark blobs
       cloud = max(cloud, mv);
     }
@@ -639,10 +639,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
           let fib = 0.55 * n3(vec3f(dot(q.xy, ad) * 0.04, dot(q.xy, an) * 0.3, q.z * 0.5)) + 0.45 * n3(q * 0.3 + vec3f(0.2, 0.9, 0.4));
           nn = mix(nn, fib, ice);
         }
-        let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.35, ice) - 0.25 * stri;
+        let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.22, ice) - 0.25 * stri;
         let lowSoft = 1.0 - smoothstep(S.base.x + 0.2, S.base.x + 0.8, q.z);   // undersides: soft and ragged
         let ddW = mix(smoothstep(0.26, 0.4, v), smoothstep(0.18, 0.55, v), lowSoft) * (0.4 + 0.6 * smoothstep(0.4, 0.75, v));
-        let ddI = smoothstep(0.18, 0.8, v) * 0.6;
+        let ddI = smoothstep(0.12, 0.85, v) * 0.6;
         let dd = mix(ddW, ddI, ice);
         surf = T > 0.25 && v > 0.15;
         if (dd > 0.0) {
