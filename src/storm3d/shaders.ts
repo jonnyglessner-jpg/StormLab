@@ -202,7 +202,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // striated cloud just above cloud base (the 'mothership'), widest at the bottom
     // a young tower narrows into a turreted head; a mature one widens again toward the anvil
     let flare = (0.9 * S.tower.w + 0.12 * (1.0 - young)) * exp(-max(zr, 0.0) / 1.0);
-    let rad = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.3 * ss(0.45, 0.95, hz), -0.3 * hz * hz, young));
+    // near the top a mature tower flares out like a trumpet into the anvil, rather than meeting it at a corner
+    let trumpet = 1.4 * pow(ss(el - 5.0, el - 0.6, p.z), 2.0) * clamp(S.anvil.w, 0.0, 1.0);
+    let rad = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.25 * ss(0.4, 0.8, hz) + trumpet, -0.3 * hz * hz, young));
     let n = fbm(p) - 0.5;
     let lump = mix(0.5, 1.5, ss(1.0, 5.0, zr)) * (1.0 - 0.75 * lam);
     let edge = rad + n * 2.2 * lump;
@@ -310,7 +312,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // the backsheared part stays thick, with a sharp edge, its underside sloping down toward the updraft
     let upw = ss(0.0, -nb, s);
     let thick = mix(2.7, 0.3, pow(fr, 0.55)) * mix(1.0, 0.45, upw) * (0.55 + 0.45 * grow) * (0.2 + 0.8 * lens);
-    let botz = topz - thick + n * 0.5 * thick + streak * 0.2 * fr;
+    // round the updraft the underside curves down into the tower, so tower and anvil are one smooth surface
+    let dA = length(p.xy - a0);
+    let skirtA = 2.2 * exp(-dA / max(R * 1.6, 1.0)) * grow;
+    let botz = topz - thick - skirtA + n * 0.5 * thick + streak * 0.2 * fr;
     // a soft top over several grid levels, so the gently sloping top doesn't show a contour line where it crosses one
     let vert = ss(botz - 0.2, botz + 0.35, p.z) * ss(topz + 0.25, topz - 0.55, p.z + streak * 0.25);
     // downstream it thins into cirrus and fades out
