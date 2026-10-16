@@ -15,7 +15,7 @@ import { drawHodograph } from './hodograph';
 import { drawRadar } from './radar';
 import { drawSkewT } from './skewt';
 import { SimPanel } from './sim-panel';
-import { drawSimRadar } from './sim-radar';
+import { drawSimRadar, MapView, toGround } from './sim-radar';
 import { STORM_HTML } from './template';
 
 const EFT = [65, 86, 111, 136, 166, 201];
@@ -129,6 +129,36 @@ export function mountStorm(root: HTMLElement): () => void {
     all('[data-p]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
     needRadar = true;
   }));
+  /* ---------- simulation radar: a fixed map you scroll and zoom ---------- */
+  const mapView = new MapView();
+  {
+    const rc = $<HTMLCanvasElement>('svRadar');
+    let drag: { x: number; y: number } | null = null, lastT = 0;
+    on(rc, 'pointerdown', e => { if (st.mode !== 'sim') return; drag = { x: e.clientX, y: e.clientY }; rc.setPointerCapture(e.pointerId); rc.style.cursor = 'grabbing'; });
+    on(rc, 'pointermove', e => {
+      if (!drag) return;
+      mapView.pan(e.clientX - drag.x, e.clientY - drag.y); drag = { x: e.clientX, y: e.clientY }; needRadar = true;
+    });
+    const end = () => { drag = null; rc.style.cursor = st.mode === 'sim' ? 'grab' : ''; };
+    on(rc, 'pointerup', end); on(rc, 'pointercancel', end);
+    on(rc, 'wheel', e => {
+      if (st.mode !== 'sim') return;
+      e.preventDefault();
+      const r = rc.getBoundingClientRect();
+      mapView.zoom(Math.exp(e.deltaY * 0.0015), e.clientX - r.left, e.clientY - r.top, r.width, r.height); needRadar = true;
+    }, { passive: false });
+    on(rc, 'dblclick', () => {
+      const fr = panel.frame;
+      if (st.mode !== 'sim' || !fr || !panel.focus) return;
+      const [x, y] = toGround(fr, (panel.focus[0] + fr.g.NX * fr.g.dx / 2000) * 1000, (panel.focus[1] + fr.g.NY * fr.g.dy / 2000) * 1000);
+      mapView.cx = x; mapView.cy = y; needRadar = true;
+    });
+    // a new run starts with a fresh map view
+    const watch = () => { const t = panel.frame?.t ?? 0; if (t < lastT) mapView.reset(); lastT = t; };
+    const iv = window.setInterval(watch, 1000);
+    cleanup.push(() => clearInterval(iv));
+    rc.style.cursor = 'grab';
+  }
   const lab = $<HTMLInputElement>('svLab');
   on(lab, 'change', () => { st.labels = lab.checked; needRadar = true; });
 
@@ -325,7 +355,7 @@ export function mountStorm(root: HTMLElement): () => void {
     if (st.view === '3d' && need3D) { draw3D(); need3D = false; }
     if (st.view === 'radar' && needRadar) {
       $('svTagL').textContent = st.mode === 'sim'
-        ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [], panel.swath)
+        ? drawSimRadar($<HTMLCanvasElement>('svRadar'), panel.frame, st.prod, panel.torNow, panel.tracker?.events ?? [], panel.swath, mapView)
         : drawRadar($<HTMLCanvasElement>('svRadar'), RES, E, S, tor, { ...st, prod: st.prod === 'hail' ? 'dbz' : st.prod });
       needRadar = false;
     }

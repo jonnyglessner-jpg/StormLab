@@ -51,7 +51,7 @@ is the time-stepping alternative.
 | Start | `src/sim/start.ts` | A field of cumulus: a main forced updraft about 12 km across ringed by six smaller towers, switched on over the first 6 minutes and released by 18 (updraft nudging as in CM1, Naylor & Gilmore 2012), plus 0.1 K noise in the boundary layer. The cumulus sit under the cap until the main tower breaks through at about 12–15 minutes |
 | GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m, or an optional 160 × 160 × 40 grid at 500 m (about 6× the work) |
 | Fallback | `src/sim/sim.worker.ts` | CPU reference in a worker on a coarser grid when WebGPU is missing |
-| Output | `src/sim/diag.ts` | Radar reflectivity (rain, snow and hail) and velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
+| Output | `src/sim/diag.ts`, `src/views/storm/sim-radar.ts` | A radar-app map (fixed radar site, fictional counties, highways and towns; drag to scroll, wheel to zoom) with the storm moving across it: reflectivity (rain, snow and hail) and storm-relative velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
 
 The microphysics is written once, in a subset of syntax that is valid both as JavaScript and as WGSL, so the CPU
 reference and the GPU kernels run the same code. The GPU and CPU models agree to about 0.2 % after 130 steps,

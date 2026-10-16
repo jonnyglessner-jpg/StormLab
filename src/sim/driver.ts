@@ -16,7 +16,8 @@ import type { SimWorkerIn, SimWorkerOut } from './sim.worker';
 
 export const RUN_LENGTH = 7200;   // s of model time
 
-export interface DiagFrame { t: number; g: GridSpec; diag: Float32Array }
+/** One diagnostics frame. cu, cv: the storm-following frame's motion over the ground, m/s. */
+export interface DiagFrame { t: number; g: GridSpec; diag: Float32Array; cu: number; cv: number }
 
 export interface SimDriver {
   readonly kind: 'gpu' | 'cpu';
@@ -107,7 +108,7 @@ class GpuDriver implements SimDriver {
     const d = await this.sim.readDiag();
     if (!d) return;
     this.lastDiag = this.sim.t;
-    this.onDiag?.({ t: this.sim.t, g: this.g, diag: d });
+    this.onDiag?.({ t: this.sim.t, g: this.g, diag: d, cu: this.base.cu, cv: this.base.cv });
   }
 
   destroy(): void { this.running = false; this.sim.destroy(); }
@@ -136,7 +137,7 @@ class CpuDriver implements SimDriver {
       this.waiting = false;
       this.tNow = m.t;
       if (m.vol) { this.lastVol = m.vol; if (this.renderer) { this.renderer.setVolume(m.vol); this.volumeDirty = true; } }
-      this.onDiag?.({ t: m.t, g: this.g, diag: m.diag });
+      this.onDiag?.({ t: m.t, g: this.g, diag: m.diag, cu: this.base.cu, cv: this.base.cv });
     };
     const msg: SimWorkerIn = { type: 'init', env: E.o, nudge: defaultNudge(this.g, 10) };
     this.worker.postMessage(msg);
