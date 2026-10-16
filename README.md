@@ -8,6 +8,9 @@ swirl-ratio vortex model.
 
 Everything runs in the browser. The storm view needs **WebGPU** (Chrome or Edge).
 
+Want to use the storm in your own project or game engine? See **[HANDOFF.md](HANDOFF.md)** for what each piece is
+and how to port it. The code is MIT-licensed.
+
 ## Run it
 
 ```sh

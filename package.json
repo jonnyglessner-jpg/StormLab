@@ -4,6 +4,7 @@
   "private": true,
   "description": "Interactive supercell and tornado simulator: build the environment, watch the storm and the tornado it produces.",
   "type": "module",
+  "license": "MIT",
   "scripts": {
     "dev": "node scripts/build.mjs --serve",
     "build": "node scripts/build.mjs",
