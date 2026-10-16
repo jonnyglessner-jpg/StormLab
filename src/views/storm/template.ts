@@ -17,10 +17,9 @@ export const STORM_HTML = `
       <div class="stage">
         <canvas id="svGL" aria-label="Three-dimensional view of the storm" style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;cursor:grab;touch-action:none"></canvas>
         <span class="tag tl" id="svTagL">—</span>
-        <span class="tag tr" id="svTagR">—</span>
-        <div id="svStage" class="stagecap" aria-live="polite"><b id="svStageName">—</b><span id="svStageText">—</span><button type="button" id="svTorLink" hidden>Open this tornado in the Tornado Lab</button></div>
         <div id="svNoGPU" class="startover" hidden><p>This storm view needs WebGPU: Chrome or Edge on a recent computer.</p></div>
       </div>
+      <div id="svStage" class="stagecap" aria-live="polite"><b id="svStageName">—</b><span id="svStageText">—</span><button type="button" id="svTorLink" hidden>Open this tornado in the Tornado Lab</button></div>
       <div class="row" style="gap:10px">
         <button type="button" id="plPlay" style="min-width:74px">Pause</button>
         <input type="range" id="plTime" min="0" max="110" step="0.1" value="0" aria-label="Storm time" style="flex:1 1 220px;accent-color:var(--accent)">
@@ -35,6 +34,7 @@ export const STORM_HTML = `
           <button data-q="high" aria-pressed="true">High detail</button><button data-q="low">Faster</button>
         </div>
         <button id="svSave" type="button">Save image</button>
+        <span class="gpu-note">Drag to orbit · right-drag to pan · scroll to zoom · double-click to find the storm</span>
         <span class="gpu-note" id="svGpu"></span>
       </div>
     </div>

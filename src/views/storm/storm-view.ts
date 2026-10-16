@@ -188,10 +188,9 @@ export function mountStorm(root: HTMLElement): () => void {
         else renderer.setClock(f.params, now / 1000);
         renderer.render(viewCam(), moving ? 0.5 : undefined);
         const az = cam.az * Math.PI / 180;
-        $('svTagL').textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} from ${Math.round(cam.dist)} km · drag to orbit, right-drag to pan, double-click to find the storm`;
+        $('svTagL').textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} · ${Math.round(cam.dist)} km`;
       }
     }
-    $('svTagR').textContent = E ? `CAPE ${Math.round(E.pc.cape).toLocaleString()} · 0–6 km shear ${kt(E.shear6)} kt · STP ${E.stp.toFixed(1)}` : '';
     requestAnimationFrame(loop);
   }
   const redraw = () => { if (E) { drawSkewT($<HTMLCanvasElement>('skewT'), E); drawHodograph($<HTMLCanvasElement>('hodo'), E); } };
