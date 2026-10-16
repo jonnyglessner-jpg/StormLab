@@ -1,6 +1,6 @@
 # StormLab: Supercell Lab
 
-An interactive supercell and tornado simulator for weather education. Set the atmosphere with seven sliders and
+An interactive supercell and tornado simulator for weather education. Set the atmosphere with eight sliders and
 watch the storm it supports. You see the sounding, hodograph, storm type, radar reflectivity and velocity, and a 3-D
 chaser view. Any tornado the storm produces opens in a swirl-ratio vortex model.
 
@@ -79,14 +79,28 @@ about 50. Tests on that storm (1 km unless noted, peak updraft at 50 / 60 min):
 | Air at 3–10 km moistened to 75% humidity | 26 m/s | 16 m/s |
 | Air at 1.2–3 km moistened to 75% humidity | 54 m/s | 47 m/s |
 
-So the storm is starved by the layer just above the moist boundary layer: the Plains sounding's moisture is only
+So the storm was starved by the layer just above the moist boundary layer: the Plains sounding's moisture was only
 about 1.1 km deep, with 50–60% humidity from there to 3 km, and the storm feeds on air from the lowest 3 km. Grid
 spacing, mixing, the domain and the microphysics don't change the outcome.
 
+The **moisture depth** slider now sets how far humid air extends above cloud base before the cap. Deeper moisture
+also weakens the cap (the Plains CIN goes from −53 J/kg with none to −4 J/kg at 3,000 ft). Plains storms (peak
+updraft at 50 / 60 / 70 min, 1 km grid):
+
+| Moisture above cloud base | 50 min | 60 min | 70 min |
+| --- | --- | --- | --- |
+| None | 20 m/s | 13 m/s | 3 m/s |
+| 2,000 ft | 36 m/s | 22 m/s | 9 m/s |
+| 4,000 ft (preset default) | 41 m/s | 42 m/s | 32 m/s |
+
+The presets now carry moisture depths: Plains and Dixie 4,000 ft, Ohio Valley 3,000 ft, the summer pulse 1,500 ft,
+and none for the High Plains LP and the capped case. Ohio Valley and Dixie storms last longer than before but still
+fade after about 50–55 minutes.
+
 **Limits.** Single-moment microphysics: each class has a fixed size distribution, so hail size is estimated from
 the hail content (the model tops out near 2 in and can't make giant hail), and hail cores read high on radar (up
-to about 80 dBZ). No surface friction, no radiation, a uniform environment. Storms fed by a shallow moist layer fade
-within an hour. A 1 km grid resolves the storm and its mesocyclone, not the tornado. Tornadoes are flagged when
+to about 80 dBZ). No surface friction, no radiation, a uniform environment. Storms fed by a shallow moist layer, and
+moderate-CAPE storms, fade within an hour. A 1 km grid resolves the storm and its mesocyclone, not the tornado. Tornadoes are flagged when
 strong near-ground rotation sits under the low-level updraft for at least a minute, and their strength is an
 estimate scaled from that circulation.
 
@@ -110,6 +124,6 @@ Browser checks (headless Chromium with WebGPU):
 
 ## Roadmap
 
-1. Storm longevity: a deeper moist layer (or a moisture-depth control) in the sounding.
+1. Storm longevity in moderate-CAPE environments (Ohio Valley, Dixie): storms still fade after about 50–55 minutes.
 2. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
 3. Tornado and wall cloud drawn in the 3-D view, and a storm-following camera for the simulation.

@@ -21,6 +21,8 @@ export interface ThermoInput {
   lapse: number;
   /** Strength of the capping inversion, C of warming across 300 m */
   cap: number;
+  /** Depth of the moist layer above cloud base (m): humid air between the LCL and the cap. 0 = the cap sits on cloud base. */
+  moist?: number;
 }
 
 export interface Sounding {
@@ -31,21 +33,24 @@ export interface Sounding {
 }
 
 /**
- * Afternoon sounding. A well-mixed boundary layer reaches roughly the surface-parcel LCL (cumulus form at its top),
- * a capping inversion sits on it, then 6.5 C/km to 3 km, the user's lapse rate to 6 km, 7.2 C/km above, and an
+ * Afternoon sounding. A well-mixed boundary layer reaches roughly the surface-parcel LCL (cumulus form at its top).
+ * Above it an optional moist layer (humid, 6.5 C/km) carries the low-level moisture higher, as on days when the
+ * moisture runs deeper than cloud base; the capping inversion sits on top of that, then 6.5 C/km to 3 km, the user's lapse rate to 6 km, 7.2 C/km above, and an
  * isothermal-then-warming stratosphere. Pressure is hydrostatic with moisture.
  */
 export function sounding(o: ThermoInput): Sounding {
   const z = new Float64Array(NZ), T = new Float64Array(NZ), q = new Float64Array(NZ), p = new Float64Array(NZ);
   const T0 = F2K(o.T0F), Td0 = Math.min(F2K(o.TdF), T0), P0 = 98000;
-  const zml = clamp(125 * (T0 - Td0), 700, 3000), capD = 300, zcap = zml + capD, ztrop0 = 12500;
+  const zml = clamp(125 * (T0 - Td0), 700, 3000), md = clamp(o.moist ?? 0, 0, 2500), zm = zml + md;
+  const capD = 300, zcap = zm + capD, ztrop0 = 12500;
   const z3 = Math.max(3000, zcap + 200);
-  const Tml = T0 - 0.0095 * zml, Tcap = Tml + o.cap, T3 = Tcap - 0.0065 * (z3 - zcap), T6 = T3 - o.lapse / 1000 * (6000 - z3);
+  const Tml = T0 - 0.0095 * zml, Tm = Tml - 0.0065 * md, Tcap = Tm + o.cap, T3 = Tcap - 0.0065 * (z3 - zcap), T6 = T3 - o.lapse / 1000 * (6000 - z3);
   for (let k = 0; k < NZ; k++) {
     const zz = k * DZ; z[k] = zz;
     let t: number;
     if (zz <= zml) t = T0 - 0.0095 * zz;
-    else if (zz <= zcap) t = Tml + o.cap * (zz - zml) / capD;
+    else if (zz <= zm) t = Tml - 0.0065 * (zz - zml);
+    else if (zz <= zcap) t = Tm + o.cap * (zz - zm) / capD;
     else if (zz <= z3) t = Tcap - 0.0065 * (zz - zcap);
     else if (zz <= 6000) t = T3 - o.lapse / 1000 * (zz - z3);
     else t = T6 - 0.0072 * (zz - 6000);
@@ -64,8 +69,10 @@ export function sounding(o: ThermoInput): Sounding {
     for (let k = 0; k < NZ; k++) {
       const zz = z[k];
       if (zz <= zml) { q[k] = Math.min(q0, qsat(p[k], T[k]) * 0.98); continue; }
+      // moist layer above cloud base: humid, slowly drying toward the cap
+      if (zz <= zm) { q[k] = Math.min(q0, lerp(0.9, 0.85, (zz - zml) / md) * qsat(p[k], T[k])); continue; }
       // free troposphere: relative humidity falling off with height, drier above a strong cap
-      const rh = zz <= zcap ? lerp(0.85, 0.65, (zz - zml) / capD)
+      const rh = zz <= zcap ? lerp(0.85, 0.65, (zz - zm) / capD)
         : zz <= z3 ? lerp(0.65 - 0.04 * o.cap, 0.5, (zz - zcap) / (z3 - zcap))
           : zz <= 6000 ? lerp(0.5, 0.35 - 0.02 * (o.lapse - 6.5), (zz - z3) / (6000 - z3))
             : Math.max(0.15, 0.3 - 0.02 * (zz - 6000) / 1000);
@@ -118,17 +125,31 @@ export function parcel(s: Sounding): Parcel {
   const lcl = clamp(125 * (t0 - tdm), 0, 6000);
   const B = new Float64Array(NZ);
   for (let k = 0; k < NZ; k++) B[k] = G * (Tvp[k] - Tve[k]) / Tve[k];
-  let cape = 0, cin = 0, klfc = -1, kel = -1, cape3 = 0;
+  // Positive layers above the LCL. The storm's CAPE is the largest one: its base is the LFC, its top the EL.
+  // CIN is all the negative area below that LFC, so a shallow buoyant pocket under a cap (cumulus in a moist
+  // layer) doesn't hide the cap.
+  const layers: { k0: number; k1: number; area: number }[] = [];
   for (let k = 1; k < NZ; k++) {
     const b = 0.5 * (B[k] + B[k - 1]) * DZ;
-    if (b > 0) {
-      if (klfc < 0 && z[k] >= lcl - DZ) klfc = k - 1;
-      if (klfc >= 0) { cape += b; kel = k; if (z[k] <= 3000) cape3 += b; }
-    } else if (klfc < 0) cin += b;
-    else if (kel >= 0 && z[k] > z[kel] + 1500) break;
+    if (b > 0 && z[k] >= lcl - DZ) {
+      const last = layers[layers.length - 1];
+      if (last && last.k1 === k - 1) { last.k1 = k; last.area += b; } else layers.push({ k0: k - 1, k1: k, area: b });
+    }
   }
-  if (cape < 1) { cape = 0; klfc = -1; }
-  if (klfc < 0) cin = Math.min(cin, 0);
+  let main: { k0: number; k1: number; area: number } | null = null;
+  for (const l of layers) if (!main || l.area > main.area) main = l;
+  let cape = 0, cin = 0, cape3 = 0, klfc = -1, kel = -1;
+  if (main && main.area >= 1) {
+    klfc = main.k0; kel = main.k1; cape = main.area;
+    for (let k = klfc + 1; k <= kel; k++) if (z[k] <= 3000) cape3 += 0.5 * (B[k] + B[k - 1]) * DZ;
+  }
+  const kTop = klfc >= 0 ? klfc : NZ - 1;
+  for (let k = 1; k <= kTop; k++) { const b = 0.5 * (B[k] + B[k - 1]) * DZ; if (b < 0) cin += b; }
+  if (klfc < 0) {
+    // no storm: report the negative area up to 3 km, the energy a lifted parcel would have to overcome there
+    cin = 0;
+    for (let k = 1; k < NZ && z[k] <= 3000; k++) { const b = 0.5 * (B[k] + B[k - 1]) * DZ; if (b < 0) cin += b; }
+  }
   return { Tp, Tvp, B, cape, cin, cape3, lcl, lfc: klfc >= 0 ? z[klfc] : null, el: kel >= 0 ? z[kel] : null, thm, qm };
 }
 

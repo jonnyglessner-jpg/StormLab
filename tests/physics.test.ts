@@ -45,6 +45,20 @@ describe('thermodynamics', () => {
   });
 });
 
+describe('moisture depth', () => {
+  const at = (E: ReturnType<typeof environment>, z: number) => { let k = 0; while (E.s.z[k] < z) k++; return k; };
+  test('a deeper moist layer keeps the air above cloud base humid and weakens the cap', () => {
+    const base = { ...PRESETS.plains, moistFt: 0 };
+    const cins = [0, 1000, 2000, 3000].map(ft => environment(toEnv({ ...base, moistFt: ft })).pc.cin);
+    for (let i = 1; i < cins.length; i++) assert.ok(cins[i] > cins[i - 1], `CIN ${cins.join(', ')}`);
+    const dry = environment(toEnv(base)), wet = environment(toEnv({ ...base, moistFt: 3000 }));
+    const k = at(wet, dry.pc.lcl + 500), rh = wet.s.q[k] / qsat(wet.s.p[k], wet.s.T[k]);
+    assert.ok(rh > 0.84 && rh < 0.91, `RH above cloud base ${rh}`);
+    assert.ok(wet.s.q[k] > dry.s.q[k] * 1.2, 'more moisture above cloud base than without the layer');
+    assert.ok(Math.abs(wet.pc.cape - dry.pc.cape) / dry.pc.cape < 0.1, 'CAPE about the same');
+  });
+});
+
 describe('winds', () => {
   test('0-6 km shear matches the slider', () => {
     const E = env('plains');
