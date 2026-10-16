@@ -327,12 +327,13 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // lumpy knuckles round the head near the updraft; smooth, streaky ice further out
     // the head of the storm, the upwind end and the first stretch downwind, is cauliflower like the tower beneath
     // it; the texture smooths out into streaky ice further downstream
-    let knuckle = (1.0 - ss(R * 1.5, R * 1.5 + 0.3 * Lz, s)) * (0.6 + 0.4 * ss(0.2, 0.8, qe));
+    // cauliflower in the core of the head, over and just round the updraft, blending out into ice towards the rim
+    let knuckle = (1.0 - ss(R * 1.0, R * 1.0 + 0.18 * Lz, s)) * (1.0 - ss(0.35, 0.85, qe));
     mw += av * av; ms += av * av * mix(icy(0.35 + 0.65 * ss(0.02, 0.3, fr)), water(0.9), knuckle);
     cloud = max(cloud, av);
     // mammatus: rounded pouches hanging from the underside, in a band downwind of the storm. Each is a lobe on a
     // jittered grid (about 1.6 km apart), so they read as round bulges rather than a blotchy texture
-    if (S.anvil2.z > 0.0 && fr > 0.03 && fr < 0.6) {
+    if (S.anvil2.z > 0.0 && fr > 0.03 && fr < 0.6 && false) {   // mammatus off for now: at this grid they read as holes
       let cs = 3.4;   // large enough for the volume grid to resolve them as round, not blocky
       let g = p.xy / cs; let gi = floor(g);
       var dep = 0.0;
@@ -633,17 +634,27 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2))); }
           }
         }
-        if (ice > 0.01) {
-          // ice: fibrous streaks drawn out along the wind aloft
-          let ad = S.anvil.xy; let an = vec2f(-ad.y, ad.x);
-          let fib = 0.55 * n3(vec3f(dot(q.xy, ad) * 0.04, dot(q.xy, an) * 0.3, q.z * 0.5)) + 0.45 * n3(q * 0.3 + vec3f(0.2, 0.9, 0.4));
-          nn = mix(nn, fib, ice);
-        }
-        let v = s.r + (nn - 0.5) * mix(mix(0.2, 0.5, turb), 0.22, ice) - 0.25 * stri;
+        // water cloud: the field plus billowed detail, cut at a crisp threshold
+        let v = s.r + (nn - 0.5) * mix(0.2, 0.5, turb) - 0.25 * stri;
         let lowSoft = 1.0 - smoothstep(S.base.x + 0.2, S.base.x + 0.8, q.z);   // undersides: soft and ragged
         let ddW = mix(smoothstep(0.26, 0.4, v), smoothstep(0.18, 0.55, v), lowSoft) * (0.4 + 0.6 * smoothstep(0.4, 0.75, v));
-        let ddI = smoothstep(0.12, 0.85, v) * 0.6;
-        let dd = mix(ddW, ddI, ice);
+        // ice (the anvil): thin layers, not lumps. Sheets stacked a few hundred metres apart, gently warped, drawn
+        // out into long streaks along the wind aloft. The texture scales the density (no threshold), so the ice is
+        // translucent and its edges fade into wisps
+        var ddI = 0.0;
+        if (ice > 0.01) {
+          let ad = S.anvil.xy; let an = vec2f(-ad.y, ad.x);
+          let ua = dot(q.xy, ad); let va = dot(q.xy, an);
+          let warp = n3(vec3f(ua * 0.012, va * 0.05, 0.37));
+          let layers = 0.5 + 0.5 * cos(6.2832 * (q.z / 0.42 + 2.2 * warp));
+          let streak = n3(vec3f(ua * 0.01, va * 0.22, q.z * 0.5) + vec3f(0.6, 0.2, 0.9));
+          let fine = mix(n3(vec3f(ua * 0.04, va * 0.8, q.z * 1.6) + vec3f(0.1, 0.5, 0.3)), 0.5, lod);
+          let iceTex = 0.3 + 0.7 * clamp(0.45 * layers + 0.35 * streak + 0.2 * fine + 0.1, 0.0, 1.0);
+          let vI = s.r * iceTex;
+          ddI = smoothstep(0.04, 0.8, vI) * 0.55;
+        }
+        // blend by the material, which changes gradually from the tower's cauliflower into the anvil's ice
+        let dd = mix(ddW, ddI, smoothstep(0.0, 1.0, ice));
         surf = T > 0.25 && v > 0.15;
         if (dd > 0.0) {
           let bc = dd * U.a.w;
