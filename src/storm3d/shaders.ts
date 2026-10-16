@@ -337,7 +337,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
         }
       }
       let band = ss(0.03, 0.1, fr) * (1.0 - ss(0.4, 0.6, fr)) * lens;
-      let depth = 0.7 * S.anvil2.z * band * dep;
+      let depth = 0.45 * S.anvil2.z * band * dep;
       let mv = 0.85 * inPlan * step(0.03, depth) * ss(botz - depth - 0.04, botz - depth + 0.1, p.z) * (1.0 - ss(botz + 0.05, botz + 0.3, p.z));
       mw += mv * mv; ms += mv * mv * icy(0.95);   // shaded like the anvil's underside, not as separate dark blobs
       cloud = max(cloud, mv);
@@ -568,8 +568,9 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
   let ta = max(max(tmn.x, tmn.y), max(tmn.z, 0.0)); var tb = min(min(tmx.x, tmx.y), tmx.z);
   if (rd.z < 0.0) { tb = min(tb, -cp.z / rd.z); }
   let cosg = dot(rd, U.sd.xyz);
-  let sunc = vec3f(1.0, 0.92, 0.78); let skyc = vec3f(0.46, 0.56, 0.7);
-  let hazec = vec3f(0.66, 0.7, 0.75);
+  // low evening sun: warm and a little dimmer; the sky and haze a touch warmer near the horizon
+  let sunc = vec3f(1.0, 0.82, 0.6) * 0.95; let skyc = vec3f(0.42, 0.52, 0.68);
+  let hazec = vec3f(0.68, 0.68, 0.7);
   // tornado bounding cylinder
   let torR = max(S.tor2.y * 1.3 + 0.25 * S.wall.z, S.tor2.x * 2.4 + 0.06) * 1.2 + 0.4;
   let torC = 0.5 * (S.tor.xy + S.tor3.xy);
@@ -736,10 +737,13 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
     if (abs(g.x) < L && abs(g.y) < L) { sh = textureSampleLevel(light, samp, vec3f((g.x + L) / (2.0 * L), (g.y + L) / (2.0 * L), 0.01), 0.0).r; }
     let hz = 1.0 - exp(-tg / 70.0);
     let gp = g.xy + vec2f(U.cp.w, U.cf.w);
-    bg = groundColor(gp, tg) * (0.45 + 0.55 * sh) * (1.0 - hz) + hazec * hz * 0.85;
+    // low sun: dimmer, warmer fields where it reaches them
+    bg = groundColor(gp, tg) * (0.4 + 0.42 * sh * vec3f(1.05, 0.95, 0.82)) * (1.0 - hz) + hazec * hz * 0.85;
   } else {
     let el = clamp(rd.z, 0.0, 1.0);
-    bg = vec3f(0.8, 0.83, 0.86) * pow(1.0 - el, 3.0) + vec3f(0.33, 0.49, 0.75) * (1.0 - pow(1.0 - el, 3.0)) + 0.4 * pow(max(cosg, 0.0), 24.0) * vec3f(1.0, 0.9, 0.7);
+    // horizon glow, warmer toward the sun
+    let hz = mix(vec3f(0.78, 0.8, 0.84), vec3f(0.95, 0.82, 0.66), pow(max(cosg, 0.0), 3.0) * 0.8);
+    bg = hz * pow(1.0 - el, 3.0) + vec3f(0.33, 0.47, 0.72) * (1.0 - pow(1.0 - el, 3.0)) + 0.5 * pow(max(cosg, 0.0), 24.0) * vec3f(1.0, 0.85, 0.6);
   }
   var cc = col + T * bg;
   cc = 1.0 - exp(-U.b.y * cc);

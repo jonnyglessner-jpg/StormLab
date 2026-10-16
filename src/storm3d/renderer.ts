@@ -4,8 +4,9 @@
  */
 import { cameraBasis, type Camera } from '../render/chaser';
 
-/** Late-afternoon sun in the west-south-west, 28 degrees up: side-lights the storm's south face for a chaser. */
-const SUN_AZ = 250 * Math.PI / 180, SUN_ELEV = 28 * Math.PI / 180;
+/** Early-evening sun, the Plains' peak tornado hours (about 6-7 pm in late spring): low in the west, 15 degrees
+ * up. It lights the storm's flank golden and leaves its base and underside in deep shade. */
+const SUN_AZ = 272 * Math.PI / 180, SUN_ELEV = 15 * Math.PI / 180;
 export const STORM_SUN: [number, number, number] = [Math.sin(SUN_AZ) * Math.cos(SUN_ELEV), Math.cos(SUN_AZ) * Math.cos(SUN_ELEV), Math.sin(SUN_ELEV)];
 import { getGPU } from '../render/gpu-device';
 import { cloudNoise } from '../render/noise';
