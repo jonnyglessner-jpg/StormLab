@@ -22,12 +22,20 @@ const log = (s: string) => { out.textContent += s + '\n'; console.log(s); };
   for (const t of times) {
     const f = stormAt(P, t, 30);
     if (q.has('nearonly')) for (const k of [2 * 4 + 2, 4 * 4 + 3, 12 * 4 + 2, 9 * 4 + 3, 10 * 4 + 3, 11 * 4 + 2]) f.params[k] = 0;
-    r.update(f.params);
+    let tm = { build: 0, light: 0 };
+    if (q.has('progressive')) {
+      // the page's path: the rebuild spread over frames
+      r.beginUpdate(f.params); let steps = 0;
+      while (r.rebuilding) { r.step(); steps++; }
+      await r.device.queue.onSubmittedWorkDone(); log(`progressive build in ${steps} steps`);
+    } else tm = await r.updateTimed(f.params);
     // look at the updraft base from the given azimuth (degrees: 0 = from the east, -90 = from the south)
     const up = [f.params[16 * 4], f.params[16 * 4 + 1]];
     const tor = [f.params[13 * 4], f.params[13 * 4 + 1]], wall = [f.params[6 * 4], f.params[6 * 4 + 1]], aim = q.get('target') === 'tor' ? tor : q.get('target') === 'wall' ? wall : up;
     const tx = q.has('tx') ? +q.get('tx')! : aim[0], ty = q.has('ty') ? +q.get('ty')! : aim[1];
+    const t1 = performance.now();
     const img = await r.capture({ az, dist, h, tz, tx, ty }, W, H);
+    log(`build ${tm.build.toFixed(0)} ms, light ${tm.light.toFixed(0)} ms, render ${(performance.now() - t1).toFixed(0)} ms`);
     const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d')!.putImageData(img, 0, 0);
     (window as unknown as { shots: string[] }).shots.push(c.toDataURL('image/png'));
     const g = (i: number) => `(${f.params[i * 4].toFixed(1)},${f.params[i * 4 + 1].toFixed(1)})`;

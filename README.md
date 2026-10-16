@@ -58,6 +58,14 @@ low in the west (the Plains' peak tornado hours). The view can go full screen (b
 WASD or arrows move, Q/E rotate, R/F tilt, the wheel zooms toward the cursor, right-drag pans, left- or middle-drag
 rotates; motion eases, pan speed scales with distance, and the camera stays above the ground.
 
+**Keeping it smooth on ordinary hardware.** The volume is repainted a few times a second while the storm's time
+moves (the storm changes over minutes), spread over several frames so no single frame pays for it, and only the
+spin of the wall cloud and tornado is updated per frame. Lighting, including the shading of undersides and the
+anvil's ice, is computed once per repaint on a coarse grid rather than per pixel. The render resolution follows the
+measured frame time, dropping while frames run long and creeping back when there is headroom, and if that is not
+enough the volume drops to its low-detail grid (the Faster button does this by hand). Nothing is drawn while the
+view is scrolled off the screen.
+
 `stormAt` gives every feature's size and place at any minute: towering cumulus (0–14 min), anvil (10–20), rain
 and hail (14–28), striations, inflow tail and flanking line (18–34), then repeating 38-minute cycles of wall cloud,
 rear-flank downdraft and clear slot, tornado (when the setup supports one), rope-out as the storm occludes, and a new

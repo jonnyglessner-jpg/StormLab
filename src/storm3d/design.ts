@@ -12,7 +12,7 @@ import { tornadoParams, type StormDiag } from '../physics/storm';
 import { at } from '../physics/winds';
 
 /** Number of vec4 slots in the parameter block (must match the WGSL struct SP in shaders.ts). */
-export const NSLOT = 20;
+export const NSLOT = 21;
 
 /** One moment of the storm, as numbers the GPU builder and renderer read. */
 export interface StormFrame {
@@ -212,7 +212,7 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   set(14, torGround, torTop, cond, rope);
   set(15, torTopP[0], torTopP[1], debris, 0);
   set(16, up[0], up[1], 0, 0);
-  // slot 17 (grid) is filled by the renderer
+  // slots 17 (grid) and 20 (build pass) are filled by the renderer
   set(18, rcB[0], rcB[1], Rs, horse);
   set(19, curlS[0], curlS[1], antiAmt, antiTor);
   return { params: a, stage, caption, tornado: torOn };

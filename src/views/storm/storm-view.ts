@@ -47,11 +47,32 @@ export function mountStorm(root: HTMLElement): () => void {
     speed = +b.dataset.speed!;
     all('[data-speed]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
   }));
-  all('[data-q]').forEach(b => on(b, 'click', () => {
-    renderer?.setQuality(b.dataset.q === 'low' ? QUALITY_LOW : QUALITY_HIGH);
-    all('[data-q]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+  let quality: 'high' | 'low' = 'high', qualityChosen = false;
+  function setQualityMode(q: 'high' | 'low') {
+    quality = q;
+    renderer?.setQuality(q === 'low' ? QUALITY_LOW : QUALITY_HIGH);
+    all('[data-q]').forEach(x => x.setAttribute('aria-pressed', x.dataset.q === q ? 'true' : 'false'));
     lastBuilt = -1;
-  }));
+  }
+  all('[data-q]').forEach(b => on(b, 'click', () => { qualityChosen = true; setQualityMode(b.dataset.q === 'low' ? 'low' : 'high'); }));
+
+  /* ---------- keeping the frame rate up on whatever hardware this is ----------
+   * The render resolution follows the measured frame time: it drops while frames run long and creeps back up when
+   * there is headroom. If it bottoms out and frames are still slow, the volume drops to the low-detail grid. */
+  let resScale = 1, ftAvg = 16, govAt = 0, slowSince = 0;
+  const governor = (now: number, ft: number) => {
+    ftAvg += (Math.min(ft, 200) - ftAvg) * 0.12;
+    if (now - govAt < 400) return;
+    govAt = now;
+    if (ftAvg > 34) resScale = Math.max(0.3, resScale * 0.85);
+    else if (ftAvg < 21 && resScale < 1) resScale = Math.min(1, resScale * 1.08);
+    if (resScale <= 0.3 && ftAvg > 40) { if (!slowSince) slowSince = now; } else slowSince = 0;
+    if (slowSince && now - slowSince > 2500 && quality === 'high' && !qualityChosen) { setQualityMode('low'); slowSince = 0; resScale = 0.6; }
+  };
+  // no need to draw while the view is scrolled off the screen
+  let onScreen = true;
+  const io = new IntersectionObserver(es => { onScreen = es.some(e => e.isIntersecting); }, { threshold: 0.02 });
+  io.observe($('svGL')); cleanup.push(() => io.disconnect());
 
   /* ---------- camera: free look in ground coordinates ---------- */
   // the storm travels with its motion; the camera stays put unless "Move with the storm" is on
@@ -113,21 +134,49 @@ export function mountStorm(root: HTMLElement): () => void {
   function bindOrbit(c: HTMLCanvasElement) {
     c.tabIndex = 0;
     let drag: { x: number; y: number; pan: boolean } | null = null;
+    // touch: one finger rotates, two fingers pinch to zoom and drag to pan
+    const touches = new Map<number, { x: number; y: number }>();
+    let pinch: { d: number; cx: number; cy: number } | null = null;
     on(c, 'contextmenu', e => e.preventDefault());
     on(c, 'pointerenter', () => { viewActive = true; });
     on(c, 'pointerleave', () => { viewActive = false; });
     on(c, 'pointerdown', e => {
       c.focus({ preventScroll: true });
+      c.setPointerCapture(e.pointerId);
+      if (e.pointerType === 'touch') {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size === 2) { const [a, b] = [...touches.values()]; pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), cx: (a.x + b.x) / 2, cy: (a.y + b.y) / 2 }; drag = null; }
+        else if (touches.size === 1) drag = { x: e.clientX, y: e.clientY, pan: false };
+        return;
+      }
       drag = { x: e.clientX, y: e.clientY, pan: e.button === 2 };
-      c.setPointerCapture(e.pointerId); c.style.cursor = drag.pan ? 'move' : 'grabbing';
+      c.style.cursor = drag.pan ? 'move' : 'grabbing';
       if (e.button === 1) e.preventDefault();
     });
     on(c, 'pointermove', e => {
+      if (e.pointerType === 'touch' && touches.has(e.pointerId)) {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size >= 2 && pinch) {
+          const [a, b] = [...touches.values()];
+          const d = Math.hypot(a.x - b.x, a.y - b.y), cx = (a.x + b.x) / 2, cy = (a.y + b.y) / 2;
+          const r = c.getBoundingClientRect();
+          rig.zoom(-Math.log(d / Math.max(pinch.d, 1)) * 800, ((cx - r.left) / r.width) * 2 - 1, 1 - ((cy - r.top) / r.height) * 2, r.width / Math.max(r.height, 1));
+          rig.dragPan(cx - pinch.cx, cy - pinch.cy, c.clientHeight);
+          pinch = { d, cx, cy };
+          return;
+        }
+      }
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
       if (drag.pan) rig.dragPan(dx, dy, c.clientHeight); else rig.dragRotate(dx, dy);
     });
-    const end = () => { drag = null; c.style.cursor = 'grab'; };
+    const end = (e: PointerEvent) => {
+      touches.delete(e.pointerId);
+      if (touches.size < 2) pinch = null;
+      if (touches.size === 1) { const [a] = [...touches.values()]; drag = { x: a.x, y: a.y, pan: false }; }
+      else drag = null;
+      c.style.cursor = 'grab';
+    };
     on(c, 'pointerup', end); on(c, 'pointercancel', end);
     on(c, 'wheel', e => {
       e.preventDefault();
@@ -206,7 +255,8 @@ export function mountStorm(root: HTMLElement): () => void {
   let lastFrame = performance.now();
   function loop(now: number) {
     if (!alive) return;
-    const wallDt = Math.min(0.1, Math.max(0, (now - lastFrame) / 1000)); lastFrame = now;
+    const ft = now - lastFrame;
+    const wallDt = Math.min(0.1, Math.max(0, ft / 1000)); lastFrame = now;
     if (plan) {
       if (playing) {
         t = Math.min(plan.duration, t + speed * wallDt);
@@ -218,11 +268,17 @@ export function mountStorm(root: HTMLElement): () => void {
       $('svStageName').textContent = f.stage; $('svStageText').textContent = f.caption;
       $('svTorLink').hidden = !(f.tornado > 0.15);
       rig.update(wallDt, shift);
-      if (renderer && !captureOnly) {
-        // repaint the volume when storm time moves (at most about 15 times a second); otherwise just advance the spin
-        if ((lastBuilt < 0 || Math.abs(t - lastBuilt) > 0.02) && now - lastBuildWall > 66) { renderer.update(f.params); lastBuilt = t; lastBuildWall = now; }
-        else renderer.setClock(f.params, now / 1000);
-        renderer.render(viewCam(), rig.moving ? 0.5 : undefined);
+      if (renderer && !captureOnly && onScreen) {
+        governor(now, ft);
+        // repaint the volume when storm time moves, a few times a second (the storm changes over minutes, so this
+        // is plenty), less often still when the frame rate is struggling; otherwise just advance the spin
+        // The rebuild is spread over several frames (see StormRenderer.step), so its cost per frame stays small.
+        const rebuildEvery = resScale < 0.6 ? 400 : 200;
+        if (lastBuilt < 0) { renderer.update(f.params); lastBuilt = t; lastBuildWall = now; }
+        else if (!renderer.rebuilding && Math.abs(t - lastBuilt) > 0.05 && now - lastBuildWall > rebuildEvery) { renderer.beginUpdate(f.params); lastBuilt = t; lastBuildWall = now; }
+        renderer.step();
+        renderer.setClock(f.params, now / 1000);
+        renderer.render(viewCam(), undefined, resScale * (rig.moving ? 0.7 : 1));
         const az = rig.cur.yaw * Math.PI / 180;
         $('svTagL').textContent = `Looking ${compass(-Math.cos(az), -Math.sin(az))} · ${Math.round(rig.cur.dist)} km`;
       }

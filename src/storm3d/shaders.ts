@@ -29,7 +29,8 @@ struct SP {
   up: vec4f,     // xy updraft centre at cloud base
   grid: vec4f,   // x cells across, y levels, z half-width km, w top km
   rfdb: vec4f,   // rear-flank downdraft surge: xy centre, z radius km, w clear slot / horseshoe amount
-  anti: vec4f    // southern curl of the surge: xy position, z anti-mesocyclone, w anticyclonic tornado
+  anti: vec4f,   // southern curl of the surge: xy position, z anti-mesocyclone, w anticyclonic tornado
+  slab: vec4f    // build pass: x first z level of this slab (the build is spread over several frames)
 };
 `;
 
@@ -178,6 +179,7 @@ fn icy(ice: f32) -> f32 { return 0.3 * (1.0 - clamp(ice, 0.0, 1.0)); }
 // a cumulus congestus tower: centre c, radius R, base zb, top zt. Near-vertical sides, a rounded top
 fn congestus(p: vec3f, c: vec2f, R: f32, zb: f32, zt: f32, seed: f32) -> f32 {
   let r = length(p.xy - c);
+  if (r > R * 2.2 || p.z > zt + R * 1.2 || p.z < zb - 0.3) { return 0.0; }
   // lumps scaled to the tower, so small and large towers have the same cauliflower character
   let ps = p / max(R, 0.4) + vec3f(seed * 3.7, seed * 1.9, seed * 5.3);
   let n = 0.62 * n3(ps * 0.3) + 0.38 * n3(ps * 0.7 + vec3f(0.3, 0.6, 0.1)) - 0.5;
@@ -191,12 +193,15 @@ fn congestus(p: vec3f, c: vec2f, R: f32, zb: f32, zt: f32, seed: f32) -> f32 {
 }
 
 @compute @workgroup_size(4, 4, 4)
-fn main(@builtin(global_invocation_id) id: vec3u) {
+fn main(@builtin(global_invocation_id) gid: vec3u) {
   let nv = u32(S.grid.x); let nz = u32(S.grid.y);
+  let id = vec3u(gid.x, gid.y, gid.z + u32(S.slab.x));
   if (id.x >= nv || id.y >= nv || id.z >= nz) { return; }
   let L = S.grid.z; let ZT = S.grid.w;
   let p = vec3f(-L + (f32(id.x) + 0.5) * 2.0 * L / S.grid.x, -L + (f32(id.y) + 0.5) * 2.0 * L / S.grid.x, (f32(id.z) + 0.5) * ZT / S.grid.y);
   let fw = S.f.xy; let lf = S.f.zw; let zb = S.base.x; let el = S.base.y; let tmin = S.base.w;
+  // nothing above the storm's top: skip the work
+  if (p.z > el + 2.5) { textureStore(outD, id, vec4f(0.0, 0.0, 0.0, water(1.0))); return; }
   var cloud = 0.0; var rain = 0.0;
   // material blended by each feature's share of the cloud here, so it changes smoothly where features meet
   var mw = 1e-4; var ms = 1e-4 * water(1.0);
@@ -208,7 +213,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // widening like a bell into the anvil, with a domed top and an overshooting top above it.
   let c = mesoCentre(zr);
   let d = p.xy - c; let r = length(d);
-  if (S.tower.z > 0.0) {
+  if (S.tower.z > 0.0 && r < R * 3.5 + 6.0) {
     let H = max(zt - zb, 0.5);
     let hz = clamp(zr / H, 0.0, 1.0);
     let lam = clamp(1.7 * S.tower.w, 0.0, 1.0) * (1.0 - ss(4.0, 7.5, zr));   // how laminar (striated) the updraft is here
@@ -267,6 +272,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let Lb = (3.0 + 4.5 * S.ffd.z) * g + R * 0.5; let Wb = (2.5 + 2.0 * S.ffd.z) * (0.5 + 0.5 * g) + R * 0.4;
     let o = S.up.xy + ax * (Lb * 0.75);
     let u = dot(p.xy - o, ax); let v = dot(p.xy - o, an);
+    if (length(vec2f(u / Lb, v / Wb)) < 1.7 && p.z < el - 1.0) {
     let n = fbm(p * 1.15 + vec3f(5.1, 2.3, 0.7)) - 0.5;
     let fr = clamp(u / Lb * 0.5 + 0.5, 0.0, 1.0);
     let bot = zb + 0.1 + 2.6 * fr * fr;
@@ -277,11 +283,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let bv = 0.8 * ss(1.0, 0.7, e) * ss(-R * 0.3, R * 0.6, dot(p.xy - S.up.xy, ax)) * ss(bot - 0.1, bot + 0.5, p.z + n * 0.9) * ss(topb + 0.6, topb - 0.6, p.z + n * 0.8);
     mw += bv * bv; ms += bv * bv * water(0.55);
     cloud = max(cloud, bv);
+    }
   }
 
   // ---- the rear-flank downdraft surge eats a notch up the back of the low updraft: the clear slot. Its outline in
   // the base is the horseshoe (the flanking line and the rest of the storm are added after, so they keep their bases)
-  if (S.rfdb.z > 0.0) {
+  if (S.rfdb.z > 0.0 && length(p.xy - S.rfdb.xy) < S.rfdb.z * 1.6 + 2.0 && p.z < zb + 9.0) {
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
     let th = atan2(dot(db, lf), dot(db, fw));
     let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
@@ -308,7 +315,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let td = S.tail.xy; let tn = vec2f(-td.y, td.x);
     let sT = dot(p.xy - t0, td) + R * 0.6;                       // 0 at the updraft's edge, increasing outward
     let qT = dot(p.xy - t0, tn) - 0.035 * (S.tail.z - sT) * (S.tail.z - sT) * 0.12;
-    if (sT > -1.0 && sT < 9.0) {
+    if (sT > -1.0 && sT < 9.0 && abs(qT) < 6.0 && p.z < zb + 5.0) {
       let rise = exp(-max(sT, 0.0) / 3.5);
       let nI = fbm(p * 1.3 + vec3f(1.7, 0.4, 2.2)) - 0.5;
       let topI = zb + 0.7 + 3.4 * rise + nI * 0.4;
@@ -329,14 +336,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   // Its top is flat and smooth with faint ripples; in cross-section it is a lens, thinning to feathered edges; thick
   // near the storm, it thins downstream into streaky cirrus that fades out rather than ending at a wall. Mammatus
   // hang beneath it downwind of the storm.
-  if (S.anvil.w > 0.0) {
+  if (S.anvil.w > 0.0 && p.z > el - 9.0) {
     let a0 = S.up.xy + S.tilt.xy * (el - zb);
     let ad = S.anvil.xy; let an = vec2f(-ad.y, ad.x);
     let s = dot(p.xy - a0, ad); let q = dot(p.xy - a0, an);
     let grow = S.anvil.w; let Lz = max(S.anvil.z, 2.0);
     let fr = clamp(s / Lz, 0.0, 1.0);
-    let n = fbm(p * 0.5 + vec3f(3.1, 1.7, 0.0)) - 0.5;
-    let streak = 0.6 * n3(vec3f(s * 0.022, q * 0.2, p.z * 0.25) + vec3f(0.2, 0.5, 0.8)) + 0.4 * n3(vec3f(s * 0.05, q * 0.45, p.z * 0.4) + vec3f(0.7, 0.1, 0.5)) - 0.5;
     // plan: an ellipse from just upwind of the updraft to the far end, about 2.5 times as long as it is wide
     let back = S.anvil2.w * grow;
     let nb = max(back + R * 0.5, 0.5);
@@ -348,6 +353,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let e = length(vec2f(su, q / max(Bq, 0.5)));
     // the updraft spreads out in all directions under the tropopause: a round canopy round it, merged with the oval
     let outD = min((e - 1.0) * min(Bq, A), length(p.xy - a0) - R * 2.6 * (0.6 + 0.4 * grow));
+    if (outD < 3.5) {   // outside this the outline can't reach even with its noise
+    let n = fbm(p * 0.5 + vec3f(3.1, 1.7, 0.0)) - 0.5;
+    let streak = 0.6 * n3(vec3f(s * 0.022, q * 0.2, p.z * 0.25) + vec3f(0.2, 0.5, 0.8)) + 0.4 * n3(vec3f(s * 0.05, q * 0.45, p.z * 0.4) + vec3f(0.7, 0.1, 0.5)) - 0.5;
     let inPlan = ss(1.4, -2.0, outD + n * 1.0 + streak * (0.5 + 1.0 * fr));
     // cross-section: a lens, thinning to feathered edges (but a sharp, steep edge upwind)
     let qe = clamp(e, 0.0, 1.0);
@@ -398,6 +406,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       mw += mv * mv; ms += mv * mv * icy(0.95);   // shaded like the anvil's underside, not as separate dark blobs
       cloud = max(cloud, mv);
     }
+    }
   }
 
   // ---- flanking line: an irregular line of towering cumulus along the rear-flank gust front, curving away to the
@@ -429,9 +438,9 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       cloud = max(cloud, fv);
     }
     // the line's shared base, a low ragged shelf joining the towers to the updraft
-    if (reach > 0.0) {
-      let rel = p.xy - S.up.xy; let al = dot(rel, fd);
-      let off = dot(rel, rn) - 0.03 * al * al;
+    let rel = p.xy - S.up.xy; let al = dot(rel, fd);
+    let off = dot(rel, rn) - 0.03 * al * al;
+    if (reach > 0.0 && abs(off) < 2.5 && al > 0.0 && al < reach + 1.0 && p.z < zb + 1.6) {
       let nb = n3(p * 0.7 + vec3f(0.9, 0.3, 0.1)) - 0.5;
       let sh = ss(1.1, 0.5, abs(off) + nb * 0.8) * ss(R * 0.5, R + 0.5, al) * ss(reach - 0.5, reach - 2.5, al)
         * ss(zb - 0.1 + nb * 0.3, zb + 0.3 + nb * 0.3, p.z) * ss(zb + 0.8 + nb * 0.4, zb + 0.35, p.z) * 0.7;
@@ -468,15 +477,18 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
   // ---- precipitation: streaky curtains under the forward flank, a hail core next to the updraft. Shafts come out
   // of the cloud base and reach the ground as they grow.
-  let curt = (0.35 + 0.65 * ss(0.3, 0.7, n3(vec3f(p.x * 0.11 + p.z * 0.01, p.y * 0.11, p.z * 0.02))))
-    * (0.55 + 0.6 * n3(vec3f(p.x * 0.45, p.y * 0.45, p.z * 0.04) + vec3f(0.3, 0.5, 0.1)));
   let below = ss(zb + 1.2, zb - 0.3, p.z);
-  if (S.ffd.w > 0.0) {
+  var curt = 0.0;
+  if (below > 0.0) {
+    curt = (0.35 + 0.65 * ss(0.3, 0.7, n3(vec3f(p.x * 0.11 + p.z * 0.01, p.y * 0.11, p.z * 0.02))))
+      * (0.55 + 0.6 * n3(vec3f(p.x * 0.45, p.y * 0.45, p.z * 0.04) + vec3f(0.3, 0.5, 0.1)));
+  }
+  if (S.ffd.w > 0.0 && below > 0.0) {
     let reachF = zb * (1.0 - clamp(S.ffd.w * 1.6, 0.0, 1.0));
     let fq = p.xy - S.ffd.xy; let fa = dot(fq, fw) / (6.0 * S.ffd.z); let fb = dot(fq, lf) / (4.0 * S.ffd.z);
     rain = max(rain, S.ffd.w * exp(-(fa * fa + fb * fb)) * curt * below * ss(reachF - 0.2, reachF + 0.3, p.z));
   }
-  if (S.hail.w > 0.0) {
+  if (S.hail.w > 0.0 && below > 0.0) {
     let reachH = zb * (1.0 - clamp(S.hail.w * 1.6, 0.0, 1.0));
     let hq = length(p.xy - S.hail.xy) / S.hail.z; let hh = exp(-hq * hq) * curt * below * ss(reachH - 0.2, reachH + 0.3, p.z);
     rain = max(rain, S.hail.w * hh * 0.9);
@@ -484,7 +496,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 
   // ---- rear-flank downdraft rain: curtains wrapping round the north and west of the surge (the hook), and round
   // all of it in an HP storm
-  if (S.rfdb.z > 0.0) {
+  if (S.rfdb.z > 0.0 && below > 0.0) {
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
     let th = atan2(dot(db, lf), dot(db, fw));
     let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
@@ -497,14 +509,21 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
 }`;
 
 
-/** Lighting on a half-resolution grid: r = sun transmittance, g = skylight. */
+/**
+ * Lighting on a half-resolution grid, computed once per volume update (not per pixel per frame):
+ *   r  sun transmittance, including a near sunward blocker for water cloud
+ *   g  skylight (transmittance straight up)
+ *   b  how open the sky is just overhead: dark under bases and shelves (water cloud)
+ *   a  ice shade: anvil undersides in the shade of the ice above them, lit tops and rims (ice)
+ */
 export const LIGHT = /* wgsl */`
-struct LU { sun: vec4f, dims: vec4f, p: vec4f };   // dims: light-grid N, NZ, L km, ZT km; p: cloud max, rain max, step km
+struct LU { sun: vec4f, dims: vec4f, p: vec4f };   // dims: light-grid N, NZ, L km, ZT km; p: cloud max, rain max, step km, cloud base km
 @group(0) @binding(0) var dens: texture_3d<f32>;
 @group(0) @binding(1) var samp: sampler;
 @group(0) @binding(2) var outL: texture_storage_3d<rgba8unorm, write>;
 @group(0) @binding(3) var<uniform> U: LU;
 fn uvw(p: vec3f) -> vec3f { return vec3f((p.x + U.dims.z) / (2.0 * U.dims.z), (p.y + U.dims.z) / (2.0 * U.dims.z), p.z / U.dims.w); }
+fn dr(p: vec3f) -> f32 { return textureSampleLevel(dens, samp, uvw(p), 0.0).r; }
 fn beta(p: vec3f) -> f32 { let d = textureSampleLevel(dens, samp, uvw(p), 0.0); return (d.r * d.r + d.b * d.b) * U.p.x + d.g * d.g * U.p.y; }
 @compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
@@ -512,16 +531,40 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (id.x >= nv || id.y >= nv || id.z >= nz) { return; }
   let dx = 2.0 * U.dims.z / U.dims.x; let dz = U.dims.w / U.dims.y;
   let pos = vec3f(-U.dims.z + (f32(id.x) + 0.5) * dx, -U.dims.z + (f32(id.y) + 0.5) * dx, (f32(id.z) + 0.5) * dz);
+  let here = textureSampleLevel(dens, samp, uvw(pos), 0.0);
+  let ice = 1.0 - clamp(here.a / 0.3, 0.0, 1.0);
+  let zb = U.p.w;
+  // sun: march toward the sun in steps of st
   let st = U.p.z;
   var tau = 0.0; var q = pos + U.sun.xyz * 0.5 * st;
-  for (var i = 0; i < 64; i++) {
+  for (var i = 0; i < 40; i++) {
     if (q.z > U.dims.w || abs(q.x) > U.dims.z || abs(q.y) > U.dims.z) { break; }
     tau += beta(q) * st; q += U.sun.xyz * st;
   }
-  var up = 0.0; var r = pos + vec3f(0.0, 0.0, 0.5 * dz);
-  for (var i = 0; i < 48; i++) { if (r.z > U.dims.w) { break; } up += beta(r) * dz; r.z += dz; }
-  let sun = 0.72 * exp(-0.38 * tau) + 0.28 * exp(-0.07 * tau);
-  textureStore(outL, id, vec4f(sun, exp(-0.1 * up), 0.0, 1.0));
+  var sun = 0.72 * exp(-0.38 * tau) + 0.28 * exp(-0.07 * tau);
+  // water cloud: a blocker a little way sunward shades this cell (crevices between billows, the lee of a base's edge)
+  if (ice < 0.2) { sun *= 1.0 - 0.5 * clamp((dr(pos + U.sun.xyz * 0.9) - 0.3) * 2.0, 0.0, 1.0); }
+  // sky: march straight up in steps of 2 dz
+  var up = 0.0; var r = pos + vec3f(0.0, 0.0, dz);
+  for (var i = 0; i < 24; i++) { if (r.z > U.dims.w) { break; } up += beta(r) * 2.0 * dz; r.z += 2.0 * dz; }
+  // overhead: cloud just above this cell hides the sky (undersides of bases and shelves), not high in the storm
+  let vUp = dr(pos + vec3f(0.0, 0.0, 0.5));
+  let skyOcc = 1.0 - 0.75 * (1.0 - smoothstep(zb + 2.0, zb + 4.0, pos.z)) * clamp((vUp - 0.3) * 2.2, 0.0, 1.0);
+  // ice: the anvil's underside is in the shade of the ice above it; its top and rim stay bright. Probe up and toward
+  // the sun, and compare ice above with ice below (sampled over a couple of km, so mammatus share the shade)
+  var iceShade = 1.0;
+  if (ice > 0.05) {
+    let above = clamp((dr(pos + vec3f(0.0, 0.0, 0.6)) - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((dr(pos + vec3f(0.0, 0.0, 1.5)) - 0.1) * 3.0, 0.0, 1.0) * 0.45;
+    let sunward = clamp((dr(pos + U.sun.xyz * 1.2) - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((dr(pos + U.sun.xyz * 3.0) - 0.1) * 3.0, 0.0, 1.0) * 0.45;
+    var ua = 0.0; var dn = 0.0;
+    for (var k = 0; k < 4; k++) {
+      let o = vec3f(cos(f32(k) * 1.571), sin(f32(k) * 1.571), 0.0) * 1.2;
+      ua += dr(pos + o + vec3f(0.0, 0.0, 1.0)); dn += dr(pos + o - vec3f(0.0, 0.0, 1.0));
+    }
+    let under = smoothstep(0.0, 0.4, (ua - 1.5 * dn) * 0.25);
+    iceShade = (1.0 - 0.8 * sunward) * (1.0 - 0.8 * under) * (1.0 - 0.3 * above);
+  }
+  textureStore(outL, id, vec4f(sun, exp(-0.1 * up), skyOcc, iceShade));
 }`;
 
 /** Render pass. RU: camera basis, sun, frame data. */
@@ -601,8 +644,11 @@ fn tornado(q: vec3f) -> vec2f {
 // lod 0 near .. 1 far: the finest octave fades out with distance so far clouds don't sparkle
 fn detail(q: vec3f, turb: f32, lod: f32) -> f32 {
   var soft = 0.5; var lobes = 0.5;
-  if (turb < 0.98) { soft = 0.55 * n3(q * 0.21) + 0.3 * n3(q * 0.6 + vec3f(0.31, 0.17, 0.53)) + 0.15 * mix(n3(q * 1.9 + vec3f(0.11, 0.71, 0.29)), 0.5, lod); }
-  if (turb > 0.02) { lobes = 0.88 * billow(q) + 0.12 * mix(n3(q * 3.5 + vec3f(0.5, 0.3, 0.9)), 0.5, lod); }
+  // the finest octaves only up close (lod < 1): far away they would only add sparkle, and they cost samples
+  var f1 = 0.5; var f2 = 0.5;
+  if (lod < 0.98) { f1 = mix(n3(q * 1.9 + vec3f(0.11, 0.71, 0.29)), 0.5, lod); f2 = mix(n3(q * 3.5 + vec3f(0.5, 0.3, 0.9)), 0.5, lod); }
+  if (turb < 0.98) { soft = 0.55 * n3(q * 0.21) + 0.3 * n3(q * 0.6 + vec3f(0.31, 0.17, 0.53)) + 0.15 * f1; }
+  if (turb > 0.02) { lobes = 0.88 * billow(q) + 0.12 * f2; }
   return mix(soft, lobes, turb);
 }
 // striations: grooves stacked up the side of the rotating updraft, rings with a slow wave in them; ang and w are
@@ -672,7 +718,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
       if (surf) { dt = min(dt, 0.025 + t * 0.0015); }
       if (nearTor || nearAnti) { dt = 0.02 + t * 0.0006; }
       else if (nearOn) { dt = min(dt, 0.035 + t * 0.003); }
-      else if (s.r <= 0.004 && s.g <= 0.004 && s.b <= 0.004) { dt = max(dt, 0.45); }
+      else if (s.r <= 0.004 && s.g <= 0.004 && s.b <= 0.004) { dt = max(dt, 0.45 * (1.0 + t / 40.0)); }   // empty air: stride
       var be = 0.0; var Lc = vec3f(0.0);
       let lt = textureSampleLevel(light, samp, tc, 0.0);
       let haze = 1.0 - exp(-t / 110.0);
@@ -691,11 +737,11 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         var nn = 0.5; var stri = 0.0;
         let lod = smoothstep(3.0, 18.0, t);
         if (ice < 0.99) {
-          if (m < 0.99) { nn = detail(q, turb, lod); }
+          // one detail lookup at a position blended between the still and the rotating frame: continuous, so no seam
+          var qr = q; var udr = ud;
+          if (m > 0.01) { udr = rot2(ud, -S.tilt.w * S.base.z); qr = vec3f(mix(q.xy, uc + udr, m), q.z); }
+          nn = detail(qr, turb, lod);
           if (m > 0.01) {
-            let udr = rot2(ud, -S.tilt.w * S.base.z);
-            let qr = vec3f(uc + udr, q.z);
-            nn = mix(nn, detail(qr, turb, lod), m);
             let lam = clamp(1.7 * S.tower.w, 0.0, 1.0) * (1.0 - smoothstep(4.0, 7.5, zr)) * smoothstep(0.15, 0.7, zr);   // on the sides, not the ragged base
             // only on the updraft's own surface, not on flanking towers that come within reach
             let own = 1.0 - smoothstep(0.75 * radAt, 1.05 * radAt, ur);   // not on the thin rim of the skirt, where grooves would cut teeth
@@ -716,7 +762,8 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
           let warp = n3(vec3f(ua * 0.012, va * 0.05, 0.37));
           let layers = 0.5 + 0.5 * cos(6.2832 * (q.z / 0.42 + 2.2 * warp));
           let streak = n3(vec3f(ua * 0.01, va * 0.22, q.z * 0.5) + vec3f(0.6, 0.2, 0.9));
-          let fine = mix(n3(vec3f(ua * 0.04, va * 0.8, q.z * 1.6) + vec3f(0.1, 0.5, 0.3)), 0.5, lod);
+          var fine = 0.5;
+          if (lod < 0.98) { fine = mix(n3(vec3f(ua * 0.04, va * 0.8, q.z * 1.6) + vec3f(0.1, 0.5, 0.3)), 0.5, lod); }
           let iceTex = 0.3 + 0.7 * clamp(0.45 * layers + 0.35 * streak + 0.2 * fine + 0.1, 0.0, 1.0);
           let vI = s.r * iceTex;
           ddI = smoothstep(0.04, 0.8, vI) * 0.55;
@@ -727,45 +774,21 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         if (dd > 0.0) {
           let bc = dd * U.a.w;
           // self-shadowing of the billows, which the coarse light grid can't resolve: look a little way sunward
-          // self-shadowing the coarse light grid can't resolve: look a little way sunward. For billows this picks
-          // out lit tops and dark crevices; for the base it keeps undersides dark while sun-facing edges stay lit
+          // self-shadowing of billows at a finer scale than the light grid: one probe a little way sunward with
+          // the billow detail added (the coarser blocker term is in the light grid's sun channel)
           var selfSh = 1.0;
-          if (ice < 0.2) {
-            let q1 = q + U.sd.xyz * 0.3; let q2 = q + U.sd.xyz * 0.9;
-            var v1 = textureSampleLevel(dens, samp, uvw(q1), 0.0).r; let v2 = textureSampleLevel(dens, samp, uvw(q2), 0.0).r;
-            if (turb > 0.25) { v1 += (detail(q1, turb, 1.0) - 0.5) * 0.7 * turb; }
-            selfSh = (1.0 - 0.75 * clamp((v1 - 0.3) * 2.2, 0.0, 1.0)) * (1.0 - 0.5 * clamp((v2 - 0.3) * 2.0, 0.0, 1.0));
-            selfSh = mix(selfSh, 1.0, smoothstep(0.0, 0.2, ice));   // fade out toward ice, so there is no seam
+          if (turb > 0.25 && ice < 0.2) {
+            let q1 = q + U.sd.xyz * 0.3;
+            let v1 = textureSampleLevel(dens, samp, uvw(q1), 0.0).r + (billow(q1) - 0.5) * 0.7 * turb;
+            selfSh = 1.0 - 0.75 * turb * clamp((v1 - 0.3) * 2.2, 0.0, 1.0);
           }
-          // skylight comes from above: cloud just overhead (the underside of a base or a shelf) gets little of it
-          let vUp = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.45)), 0.0).r;
-          let skyOcc = 1.0 - 0.75 * (1.0 - ice) * (1.0 - smoothstep(S.base.x + 2.0, S.base.x + 4.0, q.z)) * clamp((vUp - 0.3) * 2.2, 0.0, 1.0);
+          // undersides of bases and shelves get little sky (light grid b); the anvil's underside sits in the shade of
+          // the ice above it (light grid a)
+          let skyOcc = mix(lt.b, 1.0, ice);
           let baseShade = smoothstep(S.base.x - 0.4, S.base.x + 1.5, q.z);
           // sun, sky, and light bounced up from the ground onto the base
           let bounce = vec3f(0.27, 0.29, 0.3) * (1.0 - baseShade) * 0.55;
-          // the anvil: its underside is in the shade of the ice above it, dark and blue-grey; only its edges and top
-          // catch the sun. Probe up through the ice and toward the sun, further than the coarse light grid resolves
-          var iceSun = 1.0; var iceSky = 1.0;
-          if (ice > 0.05) {
-            let u1 = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.6)), 0.0).r;
-            let u2 = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 1.5)), 0.0).r;
-            let s1 = textureSampleLevel(dens, samp, uvw(q + U.sd.xyz * 1.2), 0.0).r;
-            let s2 = textureSampleLevel(dens, samp, uvw(q + U.sd.xyz * 3.0), 0.0).r;
-            let above = clamp((u1 - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((u2 - 0.1) * 3.0, 0.0, 1.0) * 0.45;
-            let sunward = clamp((s1 - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((s2 - 0.1) * 3.0, 0.0, 1.0) * 0.45;
-            // which way the surface faces: more ice above than below means an underside, in the anvil's own shade,
-            // lit only dimly by light scattered down through the ice; the top and the rim stay bright
-            // sampled over a couple of km horizontally, so mammatus lobes share the shade of the underside they hang from
-            var up = 0.0; var dn = 0.0;
-            for (var k = 0; k < 4; k++) {
-              let o = vec3f(cos(f32(k) * 1.571), sin(f32(k) * 1.571), 0.0) * 1.2;
-              up += textureSampleLevel(dens, samp, uvw(q + o + vec3f(0.0, 0.0, 1.0)), 0.0).r;
-              dn += textureSampleLevel(dens, samp, uvw(q + o - vec3f(0.0, 0.0, 1.0)), 0.0).r;
-            }
-            let under = smoothstep(0.0, 0.4, (up - 1.5 * dn) * 0.25);
-            iceSun = mix(1.0, (1.0 - 0.9 * sunward) * (1.0 - 0.85 * under), ice);
-            iceSky = mix(1.0, (1.0 - 0.6 * above) * (1.0 - 0.55 * under), ice);
-          }
+          let iceSun = mix(1.0, lt.a, ice); let iceSky = mix(1.0, 0.3 + 0.7 * lt.a, ice);
           var c = sunc * (lt.r * ph * 1.9 * selfSh * iceSun) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) * (0.8 + 0.2 * selfSh) * skyOcc * iceSky + bounce;
           c *= 1.0 - 0.38 * stri;
           be += bc; Lc += c * bc;
@@ -787,8 +810,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
           // lowered cloud is lit mostly from the side and below: darker the further it hangs under the base
           let under0 = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
           // under the storm's base the low cloud is in deep shade: dense cloud just above it hides sun and sky
-          let ovh = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.7)), 0.0).r;
-          let under = under0 * (1.0 - 0.6 * clamp((ovh - 0.3) * 2.5, 0.0, 1.0));
+          let under = under0 * (0.2 + 0.8 * lt.b);
           let c = (sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g)) * under + vec3f(0.27, 0.29, 0.3) * 0.45;
           be += bn; Lc += c * mix(vec3f(0.72, 0.76, 0.82), vec3f(0.6, 0.64, 0.7), fs) * bn;
         }
