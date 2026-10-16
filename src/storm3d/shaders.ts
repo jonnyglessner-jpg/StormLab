@@ -66,8 +66,8 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       // the rear-flank downdraft eats the wall cloud's southern and western side away: what's left curls round
       // the clear slot, with the tornado at its tip
       if (S.rfdb.w > 0.0) {
-        let hb = smoothstep(S.rfdb.z * 0.98, S.rfdb.z * 0.72, length(p.xy - S.rfdb.xy) + (n - 0.5) * 0.7);
-        w *= 1.0 - S.rfdb.w * hb;
+        let hb = smoothstep(S.rfdb.z * 0.85, S.rfdb.z * 0.55, length(p.xy - S.rfdb.xy) + (n - 0.5) * 0.7) * smoothstep(Rw * 0.55, Rw * 1.0, rw);
+        w *= 1.0 - 0.8 * S.rfdb.w * hb;
       }
       v = max(v, S.wall.w * w);
       // tail cloud: a ragged band from the wall cloud toward the rain on the forward flank
@@ -88,24 +88,23 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
     }
   }
   if (S.rfdb.w > 0.0) {
-    // the horseshoe: the surge's gust front curls round the clear slot as a ragged, lowered lip of cloud, from the
-    // northern curl (wall cloud and tornado) round its leading edge to the southern curl
+    // the horseshoe: the edge of the base curling round the clear slot, closed on the east and open to the rear, its
+    // northern arm running into the wall cloud and its southern arm ending in the anticyclonic curl. Thick and deep:
+    // a steep, ragged face toward the slot, rising more gently outward into the base
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
-    if (abs(rb - Rs) < 1.2 && p.z < zb + 0.3 && p.z > zb - 0.8) {
-      let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));      // +40 deg at the northern curl, -140 deg at the southern
-      let am = smoothstep(-0.2, 0.1, cos(th + 0.87));          // the arc between them, through the eastern side
-      let dl = rot2(db, -0.08 * clock);
-      let nl = 0.6 * n3(vec3f(dl * 0.7, p.z * 1.4) + vec3f(0.2, 0.4, 0.9)) + 0.4 * mix(0.5, n3(vec3f(dl * 2.4, p.z * 3.0) + vec3f(0.8, 0.1, 0.3)), fine);
-      // deepest where it joins the wall cloud in the north, shallower round the leading edge, deepening a little
-      // again into the southern curl
-      let north = smoothstep(0.5, 1.0, cos(th - 0.7)); let south = smoothstep(0.6, 1.0, cos(th + 2.44));
-      let depth = (0.05 + 0.5 * S.wall2.x * north + 0.12 * south) * (0.5 + 0.5 * nl);
-      let bot = zb - depth - (nl - 0.5) * 0.12;
-      // it hangs from the base just outside the slot and rises into it: no gap between lip and base
-      let wid = 0.3 + 0.3 * nl;
-      let lip = am * smoothstep(wid, wid * 0.3, abs(rb - Rs * 0.97) + (nl - 0.5) * 0.6)
-        * smoothstep(bot - 0.03, bot + 0.06, p.z) * smoothstep(zb + 0.45, zb + 0.15, p.z);
-      v = max(v, S.rfdb.w * lip * 0.9);
+    if (abs(rb - Rs) < 2.2 && p.z < zb + 0.6 && p.z > zb - 1.0) {
+      let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));     // the arc runs from -150 deg (south arm) through the east to +105 (north arm)
+      let am = smoothstep(-0.72, -0.5, cos(th + 0.39));
+      let dl = rot2(db, -0.06 * clock);
+      let nl = 0.6 * n3(vec3f(dl * 0.6, p.z * 1.2) + vec3f(0.2, 0.4, 0.9)) + 0.4 * mix(0.5, n3(vec3f(dl * 2.2, p.z * 2.6) + vec3f(0.8, 0.1, 0.3)), fine);
+      let north = smoothstep(0.3, 1.0, cos(th - 1.4)); let south = smoothstep(0.5, 1.0, cos(th + 2.6));
+      let D = (0.3 + 0.15 * south + 0.25 * north + 0.4 * S.wall2.x * north) * (0.75 + 0.5 * nl);
+      // radial profile: x < 0 toward the slot (steep face), x > 0 outward (rising into the base)
+      let x = rb - Rs + (nl - 0.5) * 0.7;
+      let prof = smoothstep(-0.6, -0.25, x) * (1.0 - smoothstep(0.1, 1.6, x));
+      let bot = zb - D * prof - (nl - 0.5) * 0.15;
+      let lip = am * step(0.02, prof) * smoothstep(bot - 0.04, bot + 0.08, p.z) * smoothstep(zb + 0.55, zb + 0.2, p.z);
+      v = max(v, S.rfdb.w * lip);
     }
   }
   if (S.anti.z > 0.0) {
@@ -231,9 +230,11 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
     let th = atan2(dot(db, lf), dot(db, fw));
     let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
-    let hole = ss(Rs * 0.92, Rs * 0.62, rb + nsl * Rs * 0.3);
-    let hgt = zb + (1.2 + 2.2 * S.rfdb.w) * (0.6 + 0.4 * ss(0.5, -0.8, cos(th)));
-    let slot = clamp(S.rfdb.w * hole * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
+    let hole = ss(Rs * 0.85, Rs * 0.55, rb + nsl * Rs * 0.3);
+    // the base over the wall cloud stays: the wall cloud hangs from it on the inner side of the northern arm
+    let keep = ss(S.wall.z * 1.35, S.wall.z * 0.95, length(p.xy - S.wall.xy) + nsl * 0.5);
+    let hgt = zb + (1.5 + 2.5 * S.rfdb.w) * (0.55 + 0.45 * ss(0.3, -0.8, cos(th)));   // deepest toward the open, rear side
+    let slot = clamp(S.rfdb.w * hole * (1.0 - keep) * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
     cloud *= 1.0 - slot;
   }
 

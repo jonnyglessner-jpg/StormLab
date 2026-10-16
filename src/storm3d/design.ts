@@ -135,14 +135,17 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
       slot = P.slot * ramp(tau, 10, 16) * (1 - ramp(tau, 30, 36));
       slotR = P.Rw + 0.8 + 2.2 * ramp(tau, 12, 30);
       rfdAmt = P.rfd * ramp(tau, 8, 16);
-      // the surge: its northern curl sits under the rear-right of the wall cloud; it bulges out to the south and east
+      // The surge, seen from below, is a horseshoe: the base's edge curls round the clear slot, closed on the east
+      // (inflow) side and open to the rear, where the RFD comes down. Its arms reach back to the west: the wall cloud
+      // and the tornado sit on the inner side of the northern arm, the anticyclonic side at the tip of the southern
+      // arm. Angles are in the storm's frame (0 = downstream, +90 = left of the motion, i.e. north for a NE mover).
+      const dir = (th: number): [number, number] => [Math.cos(th) * fx + Math.sin(th) * lx, Math.cos(th) * fy + Math.sin(th) * ly];
+      Rs = P.Rw * (0.95 + 0.55 * ramp(tau, 9, 24));
+      const dn = dir(75 * Math.PI / 180), dsth = dir(-150 * Math.PI / 180);
+      rcB = [wc[0] - 0.62 * Rs * dn[0], wc[1] - 0.62 * Rs * dn[1]];
+      curlS = [rcB[0] + Rs * dsth[0], rcB[1] + Rs * dsth[1]];
+      // tornado on the wall cloud's slot side (its rear-right)
       const curlN: [number, number] = [wc[0] + (-0.35 * fx - 0.35 * lx) * P.Rw, wc[1] + (-0.35 * fy - 0.35 * ly) * P.Rw];
-      Rs = P.Rw * (0.45 + 0.7 * ramp(tau, 9, 26));
-      // angles in the storm's frame (0 = downstream, +90 = left of motion): the surge centre lies south-south-west of
-      // the tornado, its gust front bulging east between the northern curl (+40) and the southern curl (-140)
-      const thN = 40 * Math.PI / 180, thS = -140 * Math.PI / 180;
-      rcB = [curlN[0] - Rs * (Math.cos(thN) * fx + Math.sin(thN) * lx), curlN[1] - Rs * (Math.cos(thN) * fy + Math.sin(thN) * ly)];
-      curlS = [rcB[0] + Rs * (Math.cos(thS) * fx + Math.sin(thS) * lx), rcB[1] + Rs * (Math.cos(thS) * fy + Math.sin(thS) * ly)];
       horse = slot * ramp(tau, 9, 15);
       antiAmt = P.antiMeso * ramp(tau, 12, 17) * (1 - ramp(tau, 25, 30));
       if (P.antiTornado && k === 1) antiTor = ramp(tau, 17, 18.5) * (1 - ramp(tau, 21, 23));
@@ -156,7 +159,7 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
         torGround = P.torR * shrink * (0.6 + 0.4 * form);
         torTop = (P.torR * (P.torType > 0.7 ? 1.4 : 2.6) + 0.12) * (1 - 0.6 * rope);
         // tornado under the rear-right part of the wall cloud; it's left behind as the storm occludes (rope out)
-        torTopP = curlN;   // the northern curl of the RFD surge
+        torTopP = curlN;   // on the inner side of the horseshoe's northern arm
         const drift = 0.45 * rope;
         torBot = [torTopP[0] + (-fx * 0.8 - lx * 0.6) * drift, torTopP[1] + (-fy * 0.8 - ly * 0.6) * drift];
         torOn = torAmt;
