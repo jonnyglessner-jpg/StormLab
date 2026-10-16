@@ -147,7 +147,9 @@ Browser checks (headless Chromium with WebGPU):
 
 ## Roadmap
 
-1. Radar: reflectivity (hook echo, inflow notch) and velocity (couplet) drawn from the same storm, on the radar map.
-2. Teaching layer: a guided tour through the stages, with labels on the storm's features.
-3. A fallback for browsers without WebGPU.
-4. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
+1. Teaching layer: a guided tour through the stages, with labels on the storm's features.
+2. A fallback for browsers without WebGPU.
+3. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
+
+Shelved: radar (reflectivity and velocity drawn from the same storm). The radar map code from the cloud model is
+kept in `src/views/storm/sim-radar.ts`.
