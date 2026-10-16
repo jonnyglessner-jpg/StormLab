@@ -27,7 +27,9 @@ struct SP {
   tor2: vec4f,   // x radius at ground, y radius at cloud base, z condensation reach (0..1), w rope-out
   tor3: vec4f,   // xy tornado top (under the wall cloud), z debris
   up: vec4f,     // xy updraft centre at cloud base
-  grid: vec4f    // x cells across, y levels, z half-width km, w top km
+  grid: vec4f,   // x cells across, y levels, z half-width km, w top km
+  rfdb: vec4f,   // rear-flank downdraft surge: xy centre, z radius km, w clear slot / horseshoe amount
+  anti: vec4f    // southern curl of the surge: xy position, z anti-mesocyclone, w anticyclonic tornado
 };
 `;
 
@@ -60,7 +62,13 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       let fringe = mix(0.5, n3(vec3f(ang * 1.3, rw * 0.8, p.z * 0.6) + vec3f(0.1, 0.9, 0.5)), fine);
       // a lowered block with a flat, ragged bottom and steep sides, stepping up to the main base at its edge
       let bot = zb - lw * (1.0 - 0.45 * pow(min(rw / Rw, 1.2), 6.0)) + (n - 0.5) * 0.14 - (fringe - 0.5) * 0.3;
-      let w = smoothstep(Rw + 0.15, Rw - 0.2, rw + (n - 0.5) * 1.0) * smoothstep(bot - 0.03, bot + 0.05, p.z) * smoothstep(zb + 0.3, zb + 0.05, p.z);
+      var w = smoothstep(Rw + 0.15, Rw - 0.2, rw + (n - 0.5) * 1.0) * smoothstep(bot - 0.03, bot + 0.05, p.z) * smoothstep(zb + 0.3, zb + 0.05, p.z);
+      // the rear-flank downdraft eats the wall cloud's southern and western side away: what's left curls round
+      // the clear slot, with the tornado at its tip
+      if (S.rfdb.w > 0.0) {
+        let hb = smoothstep(S.rfdb.z * 0.98, S.rfdb.z * 0.72, length(p.xy - S.rfdb.xy) + (n - 0.5) * 0.7);
+        w *= 1.0 - S.rfdb.w * hb;
+      }
       v = max(v, S.wall.w * w);
       // tail cloud: a ragged band from the wall cloud toward the rain on the forward flank
       let td = normalize(S.ffd.xy - wc); let s = dot(dw, td); let qq = dot(dw, vec2f(-td.y, td.x));
@@ -77,6 +85,39 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       let sn2 = n3(vec3f(dr * 1.2, p.z * 3.5) + vec3f(0.4, 0.3, 0.8));
       let sc = side * smoothstep(0.74, 0.8, sn2) * smoothstep(Rw + 2.6, Rw + 0.6, rw) * smoothstep(zb - lw * 0.8 - 0.08, zb - lw * 0.8 + 0.05, p.z) * smoothstep(zb - 0.08, zb - 0.25, p.z);
       v = max(v, S.wall2.w * sc * 0.85);
+    }
+  }
+  if (S.rfdb.w > 0.0) {
+    // the horseshoe: the surge's gust front curls round the clear slot as a ragged, lowered lip of cloud, from the
+    // northern curl (wall cloud and tornado) round its leading edge to the southern curl
+    let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
+    if (abs(rb - Rs) < 1.2 && p.z < zb + 0.3 && p.z > zb - 0.8) {
+      let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));      // +40 deg at the northern curl, -140 deg at the southern
+      let am = smoothstep(-0.2, 0.1, cos(th + 0.87));          // the arc between them, through the eastern side
+      let dl = rot2(db, -0.08 * clock);
+      let nl = 0.6 * n3(vec3f(dl * 0.7, p.z * 1.4) + vec3f(0.2, 0.4, 0.9)) + 0.4 * mix(0.5, n3(vec3f(dl * 2.4, p.z * 3.0) + vec3f(0.8, 0.1, 0.3)), fine);
+      // deepest where it joins the wall cloud in the north, shallower round the leading edge, deepening a little
+      // again into the southern curl
+      let north = smoothstep(0.5, 1.0, cos(th - 0.7)); let south = smoothstep(0.6, 1.0, cos(th + 2.44));
+      let depth = (0.05 + 0.5 * S.wall2.x * north + 0.12 * south) * (0.5 + 0.5 * nl);
+      let bot = zb - depth - (nl - 0.5) * 0.12;
+      let wid = 0.35 + 0.35 * nl;
+      let lip = am * smoothstep(wid, wid * 0.3, abs(rb - Rs * 1.02) + (nl - 0.5) * 0.9)
+        * smoothstep(bot - 0.03, bot + 0.06, p.z) * smoothstep(zb + 0.2, zb, p.z);
+      v = max(v, S.rfdb.w * lip * 0.9);
+    }
+  }
+  if (S.anti.z > 0.0) {
+    // anti-mesocyclone: a small lowering at the southern curl, turning clockwise
+    let da = p.xy - S.anti.xy; let ra = length(da);
+    let Ra = 0.45 + 0.4 * S.anti.z;
+    if (ra < Ra + 1.0 && p.z < zb + 0.3 && p.z > zb - 0.7) {
+      let dra = rot2(da, 0.16 * clock);
+      let na = 0.55 * n3(vec3f(dra * 0.9, p.z * 1.5) + vec3f(0.6, 0.2, 0.7)) + 0.45 * mix(0.5, n3(vec3f(dra * 2.8, p.z * 3.0) + vec3f(0.1, 0.5, 0.2)), fine);
+      let la = (0.1 + 0.25 * S.anti.z) * (1.0 - 0.5 * pow(min(ra / Ra, 1.2), 4.0));
+      let bot = zb - la - (na - 0.5) * 0.12;
+      let lw2 = smoothstep(Ra + 0.1, Ra - 0.25, ra + (na - 0.5) * 0.6) * smoothstep(bot - 0.03, bot + 0.05, p.z) * smoothstep(zb + 0.2, zb, p.z);
+      v = max(v, S.anti.z * lw2 * 0.9);
     }
   }
   if (S.tail.w > 0.0) {
@@ -147,11 +188,12 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   if (S.tower.z > 0.0) {
     let H = max(zt - zb, 0.5);
     let hz = clamp(zr / H, 0.0, 1.0);
-    let lam = S.tower.w * (1.0 - ss(2.0, 4.5, zr));                 // how laminar (striated) the updraft is here
-    let flare = 0.2 * exp(-max(zr, 0.0) / 0.5) * S.tower.w;
-    // a waist above the striated base, then the tower widening again toward the anvil
+    let lam = S.tower.w * (1.0 - ss(3.0, 6.0, zr));                 // how laminar (striated) the updraft is here
     let young = 1.0 - clamp(S.anvil.w, 0.0, 1.0);
+    // the base of a mature supercell is broad: the rotating updraft spreads out into a wide, sloping skirt of
+    // striated cloud just above cloud base (the 'mothership'), widest at the bottom
     // a young tower narrows into a turreted head; a mature one widens again toward the anvil
+    let flare = (0.9 * S.tower.w + 0.12 * (1.0 - young)) * exp(-max(zr, 0.0) / 1.0);
     let rad = R * mix(1.0, 0.8, young) * (1.0 + flare - 0.22 * S.tower.w * ss(0.05, 0.35, hz) + mix(0.3 * ss(0.45, 0.95, hz), -0.3 * hz * hz, young));
     let n = fbm(p) - 0.5;
     let lump = mix(0.5, 1.5, ss(1.0, 5.0, zr)) * (1.0 - 0.75 * lam);
@@ -160,7 +202,10 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     let dome = mix(0.9 * rad, 2.2, clamp(S.anvil.w, 0.0, 1.0));
     let ztc = zb + (zt - zb) * mix(1.0, 0.88, young);
     let top = ztc - dome * pow(min(r / max(rad, 0.1), 1.5), 2.0) + n * mix(1.1, 2.4, young);
-    var tw = ss(0.55, -0.55, r - edge) * ss(zb - 0.05, zb + 0.15, p.z) * ss(top + 0.3, top - 0.6, p.z);
+    // where the side slopes gently (the skirt) the edge moves a long way per grid level: widen the ramp to match, or
+    // the surface shows terraces at every level
+    let ew = 0.55 + 0.12 * R * (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0));
+    var tw = ss(ew, -ew, r - edge) * ss(zb - 0.05, zb + 0.15, p.z) * ss(top + 0.3, top - 0.6, p.z);
     // overshooting top: a dome pushing up through the anvil, rising as the updraft matures
     let oh = 1.8 * S.tilt.z;
     let od = length(vec3f(d / max(R * 0.75, 0.5), (p.z - el) / max(oh, 0.2)));
@@ -177,6 +222,18 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     }
     mw += tv * tv; ms += tv * tv * water(mix(1.0, 0.12, lam));
     cloud = max(cloud, tv);
+  }
+
+  // ---- the rear-flank downdraft surge eats a notch up the back of the low updraft: the clear slot. Its outline in
+  // the base is the horseshoe (the flanking line and the rest of the storm are added after, so they keep their bases)
+  if (S.rfdb.z > 0.0) {
+    let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
+    let th = atan2(dot(db, lf), dot(db, fw));
+    let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
+    let hole = ss(Rs * 1.0, Rs * 0.7, rb + nsl * Rs * 0.35);
+    let hgt = zb + (1.5 + 3.2 * S.rfdb.w) * (0.6 + 0.4 * ss(0.5, -0.8, cos(th)));
+    let slot = clamp(S.rfdb.w * hole * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
+    cloud *= 1.0 - slot;
   }
 
   // ---- storm body: the deep cloud downstream of the updraft, over the forward-flank rain and hail, from cloud base
@@ -251,7 +308,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let ctr = S.up.xy + fd * dist + rn * (0.03 * dist * dist + (h2 - 0.5) * 1.3);
       let grow = clamp(S.flank.z * 1.7 - fk * 0.1, 0.0, 1.0);
       let life = 0.86 + 0.14 * sin(tmin * 0.3 + fk * 1.9);
-      let Hk = (zt - zb) * (0.72 - 0.085 * fk) * (0.55 + 0.8 * h3) * grow * life;
+      let Hk = (zt - zb) * (0.5 - 0.06 * fk) * (0.55 + 0.8 * h3) * grow * life;
       if (Hk < 0.25) { continue; }
       reach = max(reach, dist);
       let rk = (2.3 - 0.17 * fk) * (0.75 + 0.45 * h1) * (0.65 + 0.35 * grow);
@@ -298,17 +355,15 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     rain = max(rain, S.hail.w * hh * 0.9);
   }
 
-  // ---- rear-flank downdraft: rain curtain to the rear and a clear slot carved around the wall cloud
-  if (S.rfd.z > 0.0 || S.rfd.x > 0.0) {
-    let phi = atan2(dot(dw, lf), dot(dw, fw));           // 0 ahead, +pi/2 left, -pi/2 right, +-pi behind
-    let sec = max(ss(-0.1, 0.5, cos(phi - 2.8)), S.rfd.w);   // centred behind and a little to the left (west of the meso); HP storms wrap it round
-    let ns = n3(vec3f(p.x * 0.4, p.y * 0.4, p.z * 0.3) + vec3f(0.7, 0.7, 0.1)) - 0.5;
-    let slotR = S.rfd.y;
-    let ring = ss(Rw * 0.8, Rw * 1.1, rw + ns * 0.5) * ss(slotR + 0.6, slotR - 0.4, rw + ns * 0.9);
-    let slot = clamp(S.rfd.x * ring * ss(-0.1, 0.45, cos(phi + 2.356)) * ss(zb + 2.8, zb + 1.2, p.z), 0.0, 1.0);
-    cloud *= 1.0 - slot; rain *= 1.0 - slot;
-    let cur = ss(slotR - 0.3, slotR + 0.9, rw) * ss(slotR + 5.5, slotR + 2.0, rw) * sec;
-    rain = max(rain, S.rfd.z * cur * curt * below * 0.45);
+  // ---- rear-flank downdraft rain: curtains wrapping round the north and west of the surge (the hook), and round
+  // all of it in an HP storm
+  if (S.rfdb.z > 0.0) {
+    let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
+    let th = atan2(dot(db, lf), dot(db, fw));
+    let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
+    let hook = max(ss(-0.25, 0.55, cos(th - 1.9)), S.rfd.w);
+    let ring = ss(Rs * 0.45, Rs * 0.8, rb + nsl * 0.8) * ss(Rs * 1.15, Rs * 0.92, rb + nsl * 0.6);
+    rain = max(rain, S.rfd.z * ring * hook * curt * below * 0.6);
   }
 
   textureStore(outD, id, vec4f(sqrt(clamp(cloud, 0.0, 1.0)), sqrt(clamp(rain, 0.0, 1.0)), sqrt(clamp(near, 0.0, 1.0)), ms / mw));
@@ -428,7 +483,27 @@ fn detail(q: vec3f, turb: f32, lod: f32) -> f32 {
 fn grooves(zr: f32, ang: f32, w: f32) -> f32 {
   let ph = zr / 0.8 + 0.2 * sin(ang * 2.0 + w * 4.0) + 1.1 * w + ang / 6.2832;
   let g = fract(ph);
-  return pow(g, 1.4) * smoothstep(1.0, 0.9, g);
+  return pow(g, 1.4) * smoothstep(1.0, 0.72, g);   // eased back to the next lip, so no hard step to alias
+}
+
+// the rare anticyclonic tornado at the southern curl of the surge: slender, turning clockwise
+fn antiTornado(q: vec3f) -> vec2f {
+  let zb = S.base.x;
+  if (S.anti.w <= 0.0 || q.z > zb + 0.1) { return vec2f(0.0); }
+  let clock = S.base.z;
+  let ztop = max(zb - 0.1 - 0.25 * S.anti.z, 0.3);
+  let h = clamp(q.z / ztop, 0.0, 1.0);
+  let sway = 0.07 * vec2f(sin(h * 5.0 + clock * 0.4), cos(h * 4.0 + clock * 0.3)) * sin(3.1416 * h);
+  let dv = q.xy - (S.anti.xy - S.f.xy * 0.25 * (1.0 - h) + sway); let d = length(dv);
+  var rad = mix(0.03, 0.07, pow(h, 1.5)) * (0.6 + 0.4 * min(S.anti.w * 2.0, 1.0));
+  let collar = smoothstep(ztop * 0.6, ztop + 0.08, q.z);
+  rad += collar * collar * 0.25;
+  let pr = rot2(dv, clock * 1.1) / max(rad, 0.03);   // turning clockwise
+  let rough = (n3(vec3f(pr * 0.9, q.z * 1.3)) - 0.5) * 0.45 + (n3(vec3f(pr * 2.6, q.z * 5.0) + vec3f(0.5, 0.2, 0.9)) - 0.5) * 0.3;
+  let funnel = min(S.anti.w * 2.5, 1.0) * smoothstep(1.25, 0.45, d / rad + rough) * smoothstep(zb * 0.25, zb * 0.45, q.z);
+  let dn = n3(vec3f(pr * 0.25, q.z * 2.5) + vec3f(0.3, 0.1, 0.7));
+  let debris = S.anti.w * smoothstep(0.12, 0.04, d + (dn - 0.5) * 0.08) * smoothstep(0.1, 0.02, q.z) * 6.0;
+  return vec2f(funnel, debris);
 }
 
 fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; return max(a, b) + h * h * k * 0.25; }
@@ -458,13 +533,14 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
       if (t > tb || T < 0.01) { break; }
       let q = cp + rd * t;
       let nearTor = S.tor.z > 0.0 && q.z < S.base.x + 0.2 && length(q.xy - torC) < torR + length(S.tor.xy - S.tor3.xy) * 0.5;
+      let nearAnti = S.anti.w > 0.0 && q.z < S.base.x + 0.2 && length(q.xy - S.anti.xy) < 0.75;
       var dt = dt0 * (1.0 + t / 50.0);
       let tc = uvw(q);
       let s = textureSampleLevel(dens, samp, tc, 0.0);
       // near-ground features: fine steps where the coarse copy says they are
       let nearOn = s.b > 0.05 && q.z < S.base.x + 0.5;
       if (surf) { dt = min(dt, 0.025 + t * 0.0015); }
-      if (nearTor) { dt = 0.02 + t * 0.0006; }
+      if (nearTor || nearAnti) { dt = 0.02 + t * 0.0006; }
       else if (nearOn) { dt = min(dt, 0.035 + t * 0.003); }
       else if (s.r <= 0.004 && s.g <= 0.004 && s.b <= 0.004) { dt = max(dt, 0.45); }
       var be = 0.0; var Lc = vec3f(0.0);
@@ -480,7 +556,8 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         let uc = S.up.xy + S.tilt.xy * max(zr, 0.0);
         let ud = q.xy - uc; let ur = length(ud);
         let mR = max(S.tower.y, 0.5);
-        let m = select(0.0, (1.0 - smoothstep(1.25 * mR, 2.0 * mR, ur)) * (1.0 - smoothstep(6.0, 9.0, zr)) * smoothstep(-0.6, -0.1, zr), S.tilt.w > 0.0);
+        let radAt = mR * (1.0 + (0.9 * S.tower.w + 0.12) * exp(-max(zr, 0.0) / 1.0));
+        let m = select(0.0, (1.0 - smoothstep(1.25 * radAt, 2.0 * radAt, ur)) * (1.0 - smoothstep(6.0, 9.0, zr)) * smoothstep(-0.6, -0.1, zr), S.tilt.w > 0.0);
         var nn = 0.5; var stri = 0.0;
         let lod = smoothstep(3.0, 18.0, t);
         if (ice < 0.99) {
@@ -489,9 +566,9 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
             let udr = rot2(ud, -S.tilt.w * S.base.z);
             let qr = vec3f(uc + udr, q.z);
             nn = mix(nn, detail(qr, turb, lod), m);
-            let lam = S.tower.w * (1.0 - smoothstep(2.0, 4.5, zr)) * smoothstep(-0.2, 0.15, zr);
+            let lam = S.tower.w * (1.0 - smoothstep(3.0, 6.0, zr)) * smoothstep(-0.2, 0.15, zr);
             // only on the updraft's own surface, not on flanking towers that come within reach
-            let own = 1.0 - smoothstep(1.0 * mR, 1.35 * mR, ur);
+            let own = 1.0 - smoothstep(1.0 * radAt, 1.3 * radAt, ur);
             if (lam * own > 0.01) { stri = m * own * lam * grooves(zr, atan2(udr.y, udr.x), n3(qr * 0.18 + vec3f(0.4, 0.8, 0.2))); }
           }
         }
@@ -509,16 +586,22 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         if (dd > 0.0) {
           let bc = dd * U.a.w;
           // self-shadowing of the billows, which the coarse light grid can't resolve: look a little way sunward
+          // self-shadowing the coarse light grid can't resolve: look a little way sunward. For billows this picks
+          // out lit tops and dark crevices; for the base it keeps undersides dark while sun-facing edges stay lit
           var selfSh = 1.0;
-          if (turb > 0.25 && ice < 0.5) {
-            let qs = q + U.sd.xyz * 0.32;
-            let vs = textureSampleLevel(dens, samp, uvw(qs), 0.0).r + (detail(qs, turb, 1.0) - 0.5) * 0.7 * turb;
-            selfSh = 1.0 - 0.7 * turb * clamp((vs - 0.3) * 2.2, 0.0, 1.0);
+          if (ice < 0.2) {
+            let q1 = q + U.sd.xyz * 0.3; let q2 = q + U.sd.xyz * 0.9;
+            var v1 = textureSampleLevel(dens, samp, uvw(q1), 0.0).r; let v2 = textureSampleLevel(dens, samp, uvw(q2), 0.0).r;
+            if (turb > 0.25) { v1 += (detail(q1, turb, 1.0) - 0.5) * 0.7 * turb; }
+            selfSh = (1.0 - 0.75 * clamp((v1 - 0.3) * 2.2, 0.0, 1.0)) * (1.0 - 0.5 * clamp((v2 - 0.3) * 2.0, 0.0, 1.0));
           }
+          // skylight comes from above: cloud just overhead (the underside of a base or a shelf) gets little of it
+          let vUp = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.45)), 0.0).r;
+          let skyOcc = 1.0 - 0.75 * (1.0 - ice) * (1.0 - smoothstep(S.base.x + 2.0, S.base.x + 4.0, q.z)) * clamp((vUp - 0.3) * 2.2, 0.0, 1.0);
           let baseShade = smoothstep(S.base.x - 0.4, S.base.x + 1.5, q.z);
           // sun, sky, and light bounced up from the ground onto the base
-          let bounce = vec3f(0.3, 0.33, 0.27) * (1.0 - baseShade) * 0.55;
-          var c = sunc * (lt.r * ph * 1.9 * selfSh) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) * (0.8 + 0.2 * selfSh) + bounce;
+          let bounce = vec3f(0.27, 0.29, 0.3) * (1.0 - baseShade) * 0.55;
+          var c = sunc * (lt.r * ph * 1.9 * selfSh) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) * (0.8 + 0.2 * selfSh) * skyOcc + bounce;
           c *= 1.0 - 0.38 * stri;
           be += bc; Lc += c * bc;
         }
@@ -526,6 +609,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
       if (s.r <= 0.004) { surf = false; }
       var tv = vec2f(0.0);
       if (nearTor) { tv = tornado(q); }
+      if (nearAnti) { let ta = antiTornado(q); tv = vec2f(max(tv.x, ta.x), tv.y + ta.y); }
       if (nearOn || tv.x > 0.0) {
         // the wall cloud and the funnel are one cloud: smooth union, then the same threshold and light
         let nw = select(0.0, nearField(q, 1.0), nearOn);
@@ -534,7 +618,9 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         if (bn > 0.0) {
           // the funnel's own share is a little darker and cooler, as condensation in the vortex usually looks
           let fs = clamp((tv.x - nw) * 3.0 + 0.5, 0.0, 1.0) * step(0.001, tv.x);
-          let c = sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g) + vec3f(0.3, 0.33, 0.27) * 0.45;
+          // lowered cloud is lit mostly from the side and below: darker the further it hangs under the base
+          let under = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
+          let c = (sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g)) * under + vec3f(0.27, 0.29, 0.3) * 0.45;
           be += bn; Lc += c * mix(vec3f(0.72, 0.76, 0.82), vec3f(0.6, 0.64, 0.7), fs) * bn;
         }
       }
@@ -547,7 +633,7 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
       }
       if (tv.y > 0.0) {
         // dust and debris: lit like the ground beneath, fading into the haze
-        let tl = sunc * lt.r * 0.8 + skyc * (0.3 + 0.5 * lt.g) + vec3f(0.3, 0.33, 0.27) * 0.3;
+        let tl = sunc * lt.r * 0.8 + skyc * (0.3 + 0.5 * lt.g) + vec3f(0.27, 0.29, 0.3) * 0.3;
         be += tv.y; Lc += tl * vec3f(0.5, 0.44, 0.37) * tv.y;
       }
       if (be > 0.0005) {

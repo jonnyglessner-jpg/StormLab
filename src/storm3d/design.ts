@@ -12,7 +12,7 @@ import { tornadoParams, type StormDiag } from '../physics/storm';
 import { at } from '../physics/winds';
 
 /** Number of vec4 slots in the parameter block (must match the WGSL struct SP in shaders.ts). */
-export const NSLOT = 18;
+export const NSLOT = 20;
 
 /** One moment of the storm, as numbers the GPU builder and renderer read. */
 export interface StormFrame {
@@ -48,6 +48,9 @@ export interface StormPlan {
   mesoSpin: number;
   /** tornado: whether the storm makes one, its type (0 slender .. 1 wedge), ground radius km */
   tornadic: boolean; torType: number; torR: number;
+  /** anticyclonic circulation at the southern curl of the RFD surge: anti-mesocyclone strength (0..1), and whether
+   * this storm (rarely) puts down an anticyclonic tornado there */
+  antiMeso: number; antiTornado: boolean;
   /** total length of the lifecycle, min */
   duration: number;
 }
@@ -78,6 +81,8 @@ export function planStorm(E: Environment, S: StormDiag): StormPlan {
     spin: 0.04 + 0.08 * meso, mesoSpin: 0.025 + 0.03 * meso,
     tornadic: kind === 'supercell' && S.ptor >= 0.3,
     torType: rcKm < 0.07 ? 0.15 : rcKm < 0.18 ? 0.5 : 0.9, torR: clamp(rcKm, 0.03, 0.45),
+    antiMeso: kind === 'supercell' && S.ptor >= 0.3 ? clamp(E.srh1 / 300, 0.4, 1) : 0,
+    antiTornado: kind === 'supercell' && E.stp >= 4,
     duration: kind === 'supercell' ? 110 : 70
   };
 }
@@ -103,10 +108,13 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   let flankAmt = 0, flankN = 0, mesoSpin = 0;
   let torAmt = 0, torGround = 0.1, torTop = 0.3, cond = 0, rope = 0, debris = 0;
   let torBot: [number, number] = wc, torTopP: [number, number] = wc;
+  // rear-flank downdraft surge: a bulge of outflow (centre rcB, radius Rs) whose gust front curls round from its
+  // northern end (under the wall cloud, where the tornado forms) to its southern end (anticyclonic side)
+  let rcB: [number, number] = wc, Rs = 0, horse = 0, curlS: [number, number] = wc, antiAmt = 0, antiTor = 0;
 
   if (P.kind === 'supercell') {
     towerTop = P.zb + 1 + (P.el + 0.4 - P.zb - 1) * ramp(t, 0, 14);
-    towerR = P.R * (0.8 + 0.2 * ramp(t, 4, 20));
+    towerR = P.R * (0.8 + 0.2 * ramp(t, 4, 20) + 0.25 * ramp(t, 20, 40));   // broadening as the mesocyclone matures
     towerAmt = 1;
     overshoot = ramp(t, 14, 20) * (0.7 + 0.3 * Math.sin(t * 0.9));
     anvilAmt = ramp(t, 10, 20); anvilLen = 5 + P.anvilLen * ramp(t, 10, 55); back = 1.5 + 3 * ramp(t, 20, 40);
@@ -127,6 +135,17 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
       slot = P.slot * ramp(tau, 10, 16) * (1 - ramp(tau, 30, 36));
       slotR = P.Rw + 0.8 + 2.2 * ramp(tau, 12, 30);
       rfdAmt = P.rfd * ramp(tau, 8, 16);
+      // the surge: its northern curl sits under the rear-right of the wall cloud; it bulges out to the south and east
+      const curlN: [number, number] = [wc[0] + (-0.35 * fx - 0.35 * lx) * P.Rw, wc[1] + (-0.35 * fy - 0.35 * ly) * P.Rw];
+      Rs = P.Rw * (0.6 + 1.5 * ramp(tau, 9, 26));
+      // angles in the storm's frame (0 = downstream, +90 = left of motion): the surge centre lies south-south-west of
+      // the tornado, its gust front bulging east between the northern curl (+40) and the southern curl (-140)
+      const thN = 40 * Math.PI / 180, thS = -140 * Math.PI / 180;
+      rcB = [curlN[0] - Rs * (Math.cos(thN) * fx + Math.sin(thN) * lx), curlN[1] - Rs * (Math.cos(thN) * fy + Math.sin(thN) * ly)];
+      curlS = [rcB[0] + Rs * (Math.cos(thS) * fx + Math.sin(thS) * lx), rcB[1] + Rs * (Math.cos(thS) * fy + Math.sin(thS) * ly)];
+      horse = slot * ramp(tau, 9, 15);
+      antiAmt = P.antiMeso * ramp(tau, 12, 17) * (1 - ramp(tau, 25, 30));
+      if (P.antiTornado && k === 1) antiTor = ramp(tau, 17, 18.5) * (1 - ramp(tau, 21, 23));
       if (P.tornadic && k < 2) {
         const form = ramp(tau, 14, 16.5), die = ramp(tau, 26, 28.5);
         torAmt = form * (1 - die);
@@ -137,15 +156,16 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
         torGround = P.torR * shrink * (0.6 + 0.4 * form);
         torTop = (P.torR * (P.torType > 0.7 ? 1.4 : 2.6) + 0.12) * (1 - 0.6 * rope);
         // tornado under the rear-right part of the wall cloud; it's left behind as the storm occludes (rope out)
-        torTopP = [wc[0] + (-0.35 * fx - 0.35 * lx) * P.Rw, wc[1] + (-0.35 * fy - 0.35 * ly) * P.Rw];
+        torTopP = curlN;   // the northern curl of the RFD surge
         const drift = 0.45 * rope;
         torBot = [torTopP[0] + (-fx * 0.8 - lx * 0.6) * drift, torTopP[1] + (-fy * 0.8 - ly * 0.6) * drift];
         torOn = torAmt;
       }
-      if (torAmt > 0.15) { stage = rope > 0.4 ? 'Tornado roping out' : 'Tornado on the ground'; caption = rope > 0.4 ? 'The rear-flank downdraft has wrapped around the circulation and cut off its warm inflow. The tornado thins into a rope and is left behind as the storm occludes.' : 'Stretching beneath the low-level mesocyclone spins the circulation into a tornado, under the back edge of the wall cloud next to the clear slot.'; }
+      if (antiTor > 0.15) { stage = 'Anticyclonic tornado'; caption = 'Rare: a second tornado at the southern curl of the rear-flank downdraft surge, turning clockwise, while the main tornado turns counter-clockwise at the northern curl.'; }
+      else if (torAmt > 0.15) { stage = rope > 0.4 ? 'Tornado roping out' : 'Tornado on the ground'; caption = rope > 0.4 ? 'The rear-flank downdraft has wrapped around the circulation and cut off its warm inflow. The tornado thins into a rope and is left behind as the storm occludes.' : 'The tornado forms at the northern curl of the rear-flank downdraft surge, where the surge meets the warm inflow under the wall cloud.' + (antiAmt > 0.3 ? ' At the surge\'s southern curl the air turns the other way: an anti-mesocyclone.' : ''); }
       else if (tau < 10) { stage = k ? 'New wall cloud' : 'Wall cloud forming'; caption = 'Rain-cooled, moist air from the forward flank is pulled into the updraft and condenses lower than the main cloud base: a rotating wall cloud under the rear of the updraft.'; }
-      else if (tau < 16) { stage = 'Rear-flank downdraft'; caption = 'Dry air from behind the storm descends and wraps around the wall cloud, carving a clear slot shaped like a horseshoe on its south and west side.'; }
-      else if (tau < 29) { stage = P.tornadic ? 'Mature mesocyclone' : 'Mature supercell'; caption = 'The rear-flank downdraft surges around the wall cloud; the clear slot widens. Strong low-level rotation, but the storm stays tornado-free this cycle.'; }
+      else if (tau < 16) { stage = 'Rear-flank downdraft'; caption = 'Dry air from behind the storm descends, reaches the ground and surges out around the south side of the wall cloud, carving a horseshoe-shaped clear slot into the base.'; }
+      else if (tau < 29) { stage = P.tornadic ? 'Mature mesocyclone' : 'Mature supercell'; caption = 'The rear-flank downdraft surges around the wall cloud and the horseshoe-shaped clear slot widens.' + (antiAmt > 0.3 ? ' Cyclonic rotation curls up at its northern end and anticyclonic rotation at its southern end.' : '') + (P.tornadic ? '' : ' Strong low-level rotation, but no tornado this cycle.'); }
       else { stage = 'Occlusion'; caption = 'The gust front wraps around the old circulation, which weakens and drifts to the rear. A new updraft base and wall cloud take over to the east.'; }
     } else if (t < 12) { stage = 'Towering cumulus'; caption = 'A boundary-layer thermal breaks the cap and rises as a hard, cauliflower tower.'; }
     else if (t < 22) { stage = 'Cumulonimbus'; caption = 'The tower reaches the tropopause and spreads out as an anvil downwind. Rain and hail start to fall on the forward flank.'; }
@@ -187,5 +207,7 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   set(15, torTopP[0], torTopP[1], debris, 0);
   set(16, up[0], up[1], 0, 0);
   // slot 17 (grid) is filled by the renderer
+  set(18, rcB[0], rcB[1], Rs, horse);
+  set(19, curlS[0], curlS[1], antiAmt, antiTor);
   return { params: a, stage, caption, tornado: torOn };
 }

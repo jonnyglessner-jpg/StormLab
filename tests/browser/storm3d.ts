@@ -30,7 +30,8 @@ const log = (s: string) => { out.textContent += s + '\n'; console.log(s); };
     const img = await r.capture({ az, dist, h, tz, tx, ty }, W, H);
     const c = document.createElement('canvas'); c.width = W; c.height = H; c.getContext('2d')!.putImageData(img, 0, 0);
     (window as unknown as { shots: string[] }).shots.push(c.toDataURL('image/png'));
-    log(`t ${t}: ${f.stage}`);
+    const g = (i: number) => `(${f.params[i * 4].toFixed(1)},${f.params[i * 4 + 1].toFixed(1)})`;
+    log(`t ${t}: ${f.stage}  up ${g(16)} wall ${g(6)} torTop ${g(15)} surge ${g(18)} R ${f.params[18 * 4 + 2].toFixed(1)} amt ${f.params[18 * 4 + 3].toFixed(2)} south ${g(19)} anti ${f.params[19 * 4 + 2].toFixed(2)}/${f.params[19 * 4 + 3].toFixed(2)}`);
   }
   document.title = 'DONE';
 })().catch(e => { log('ERROR ' + (e as Error).message); document.title = 'ERROR'; });

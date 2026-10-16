@@ -45,6 +45,12 @@ not from a fluid simulation. `planStorm` reads the setup:
 | STP, tornado probability, LCL | Whether there is a tornado, its size and shape (slender, cone, wedge) |
 | Bunkers right-mover | Where the storm goes |
 
+Near the ground the storm follows the rear-flank downdraft picture (Lemon & Doswell 1979; Markowski 2002): once the
+RFD reaches the ground it surges out south and east of the wall cloud, eating a horseshoe-shaped clear slot into the
+base. The cyclonic tornado forms at the surge's northern curl, under the wall cloud. At its southern curl the air turns
+the other way: an anti-mesocyclone in the tornadic setups and, rarely (only the Plains outbreak storm, in its second
+cycle), an anticyclonic tornado turning clockwise. Everything else turns counter-clockwise.
+
 `stormAt` gives every feature's size and place at any minute: towering cumulus (0–14 min), anvil (10–20), rain
 and hail (14–28), striations, inflow tail and flanking line (18–34), then repeating 38-minute cycles of wall cloud,
 rear-flank downdraft and clear slot, tornado (when the setup supports one), rope-out as the storm occludes, and a new

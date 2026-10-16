@@ -18,7 +18,7 @@ export const VOL_L = 50, VOL_TOP = 18;
 const CMAX = 26, PMAX = 2.6;
 
 export interface Quality { nv: number; nz: number }
-export const QUALITY_HIGH: Quality = { nv: 288, nz: 112 };
+export const QUALITY_HIGH: Quality = { nv: 288, nz: 144 };
 export const QUALITY_LOW: Quality = { nv: 176, nz: 72 };
 
 async function moduleOf(device: GPUDevice, code: string, label: string): Promise<GPUShaderModule> {

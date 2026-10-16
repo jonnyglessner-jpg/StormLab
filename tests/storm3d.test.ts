@@ -41,4 +41,29 @@ describe('designed storm', () => {
       assert.equal(stormAt(P, 0, 0).tornado, 0, `${k} starts without a tornado`);
     }
   });
+
+  test('the RFD surge: cyclonic tornado at its northern curl, the rare anticyclonic one at its southern curl', () => {
+    const P = plan('plains');
+    assert.ok(P.antiTornado, 'the plains outbreak storm is the one that can put down an anticyclonic tornado');
+    for (const k of ['dixie', 'ohio', 'hail', 'lp']) assert.ok(!plan(k).antiTornado, `${k} should not`);
+    let sawAnti = false;
+    for (let t = 30; t <= P.duration; t += 0.5) {
+      const a = stormAt(P, t, 0).params, at = (i: number): [number, number] => [a[i * 4], a[i * 4 + 1]];
+      const [rx, ry] = at(18), Rs = a[18 * 4 + 2];
+      if (Rs <= 0) continue;
+      if (a[13 * 4 + 2] > 0.5) {
+        // tornado top on the surge's edge, north of its centre (the left of the storm's motion)
+        const [tx, ty] = at(15), [lx, ly] = [a[2], a[3]];
+        assert.ok(Math.abs(Math.hypot(tx - rx, ty - ry) - Rs) < 0.05, `tornado on the surge edge at ${t}`);
+        assert.ok((tx - rx) * lx + (ty - ry) * ly > 0, `tornado on the northern (left) side at ${t}`);
+      }
+      if (a[19 * 4 + 3] > 0.5) {
+        sawAnti = true;
+        const [sx, sy] = at(19), ty = at(15)[1];
+        assert.ok(Math.abs(Math.hypot(sx - rx, sy - ry) - Rs) < 0.05, `anticyclonic tornado on the surge edge at ${t}`);
+        assert.ok(sy < ty, 'anticyclonic tornado south of the main one');
+      }
+    }
+    assert.ok(sawAnti, 'plains storm shows its anticyclonic tornado once');
+  });
 });
