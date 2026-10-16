@@ -290,7 +290,7 @@ fn tornado(q: vec3f) -> vec2f {
   let h = clamp(q.z / ztop, 0.0, 1.0);
   let clock = S.base.z;
   // axis from the ground position up to the wall cloud, with a slow sway that grows as it ropes out
-  let sway = (0.05 + 0.3 * S.tor2.w) * vec2f(sin(h * 6.0 + clock * 0.35), cos(h * 4.5 + clock * 0.28)) * sin(3.1416 * h);
+  let sway = (0.05 + 0.12 * S.tor2.w) * vec2f(sin(h * 6.0 + clock * 0.35), cos(h * 4.5 + clock * 0.28)) * sin(3.1416 * h);
   let ax = mix(S.tor.xy, S.tor3.xy, smoothstep(0.08, 0.8, h)) + sway;   // near-vertical where it leaves the ground and where it enters the cloud
   let dv = q.xy - ax; let d = length(dv);
   var rad = mix(S.tor2.x, S.tor2.y, pow(h, mix(3.0, 0.7, S.tor.w)));
