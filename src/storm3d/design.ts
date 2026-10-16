@@ -77,7 +77,7 @@ export function planStorm(E: Environment, S: StormDiag): StormPlan {
     ffd: lp ? 0.35 : hp ? 1.5 : 1, hail: lp ? 0.6 : hp ? 1.1 : 1, rfd: lp ? 0.25 : hp ? 1.4 : 0.9,
     wrap: hp ? 0.75 : 0, slot: hp ? 0.45 : lp ? 0.8 : 1, tail: lp ? 0.6 : hp ? 0.85 : 1,
     anvilLen: clamp(28 + 1.1 * E.srAnvil, 20, 62),
-    Rw: clamp(1.1 + 0.9 * meso, 1.0, 2.2) * (hp ? 1.2 : 1), lower: clamp(0.25 + 0.3 * meso, 0.2, 0.6) * clamp(1.6 - zb / 2, 0.6, 1.3),
+    Rw: clamp(1.4 + 1.1 * meso, 1.3, 2.8) * (hp ? 1.2 : 1), lower: clamp(0.25 + 0.3 * meso, 0.2, 0.6) * clamp(1.6 - zb / 2, 0.6, 1.3),
     spin: 0.04 + 0.08 * meso, mesoSpin: 0.025 + 0.03 * meso,
     tornadic: kind === 'supercell' && S.ptor >= 0.3,
     torType: rcKm < 0.07 ? 0.15 : rcKm < 0.18 ? 0.5 : 0.9, torR: clamp(rcKm, 0.03, 0.45),
@@ -141,7 +141,8 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
       // arm. Angles are in the storm's frame (0 = downstream, +90 = left of the motion, i.e. north for a NE mover).
       const dir = (th: number): [number, number] => [Math.cos(th) * fx + Math.sin(th) * lx, Math.cos(th) * fy + Math.sin(th) * ly];
       Rs = P.Rw * (0.95 + 0.55 * ramp(tau, 9, 24));
-      const dn = dir(75 * Math.PI / 180), dsth = dir(-150 * Math.PI / 180);
+      // the slot's centre lies south-south-west of the wall cloud (+15 deg is north-north-east for a NE mover)
+      const dn = dir(15 * Math.PI / 180), dsth = dir(-170 * Math.PI / 180);
       rcB = [wc[0] - 0.62 * Rs * dn[0], wc[1] - 0.62 * Rs * dn[1]];
       curlS = [rcB[0] + Rs * dsth[0], rcB[1] + Rs * dsth[1]];
       // tornado on the wall cloud's slot side (its rear-right)

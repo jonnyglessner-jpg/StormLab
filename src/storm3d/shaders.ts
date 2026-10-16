@@ -61,7 +61,9 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
       let ang = atan2(dr.y, dr.x);
       let fringe = mix(0.5, n3(vec3f(ang * 1.3, rw * 0.8, p.z * 0.6) + vec3f(0.1, 0.9, 0.5)), fine);
       // a lowered block with a flat, ragged bottom and steep sides, stepping up to the main base at its edge
-      let bot = zb - lw * (1.0 - 0.45 * pow(min(rw / Rw, 1.2), 6.0)) + (n - 0.5) * 0.14 - (fringe - 0.5) * 0.3;
+      // a broad bowl: deepest in the middle, its underside curving up to the base at the rim
+      let bowl = 1.0 - pow(min(rw / Rw, 1.0), 2.4);
+      let bot = zb - lw * (0.15 + 0.85 * bowl) + (n - 0.5) * 0.12 - (fringe - 0.5) * 0.18;
       var w = smoothstep(Rw + 0.15, Rw - 0.2, rw + (n - 0.5) * 1.0) * smoothstep(bot - 0.03, bot + 0.05, p.z) * smoothstep(zb + 0.3, zb + 0.05, p.z);
       // the rear-flank downdraft eats the wall cloud's southern and western side away: what's left curls round
       // the clear slot, with the tornado at its tip
@@ -93,11 +95,11 @@ fn nearField(p: vec3f, fine: f32) -> f32 {
     // a steep, ragged face toward the slot, rising more gently outward into the base
     let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
     if (abs(rb - Rs) < 2.2 && p.z < zb + 0.6 && p.z > zb - 1.0) {
-      let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));     // the arc runs from -150 deg (south arm) through the east to +105 (north arm)
-      let am = smoothstep(-0.72, -0.5, cos(th + 0.39));
+      let th = atan2(dot(db, S.f.zw), dot(db, S.f.xy));     // the arc runs from -170 deg (south arm) through the east to +60 (north arm)
+      let am = smoothstep(-0.55, -0.33, cos(th + 0.96));
       let dl = rot2(db, -0.06 * clock);
       let nl = 0.6 * n3(vec3f(dl * 0.6, p.z * 1.2) + vec3f(0.2, 0.4, 0.9)) + 0.4 * mix(0.5, n3(vec3f(dl * 2.2, p.z * 2.6) + vec3f(0.8, 0.1, 0.3)), fine);
-      let north = smoothstep(0.3, 1.0, cos(th - 1.4)); let south = smoothstep(0.5, 1.0, cos(th + 2.6));
+      let north = smoothstep(0.3, 1.0, cos(th - 0.9)); let south = smoothstep(0.5, 1.0, cos(th + 2.97));
       let D = (0.3 + 0.15 * south + 0.25 * north + 0.4 * S.wall2.x * north) * (0.75 + 0.5 * nl);
       // radial profile: x < 0 toward the slot (steep face), x > 0 outward (rising into the base)
       let x = rb - Rs + (nl - 0.5) * 0.7;
@@ -224,20 +226,6 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     cloud = max(cloud, tv);
   }
 
-  // ---- the rear-flank downdraft surge eats a notch up the back of the low updraft: the clear slot. Its outline in
-  // the base is the horseshoe (the flanking line and the rest of the storm are added after, so they keep their bases)
-  if (S.rfdb.z > 0.0) {
-    let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
-    let th = atan2(dot(db, lf), dot(db, fw));
-    let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
-    let hole = ss(Rs * 0.85, Rs * 0.55, rb + nsl * Rs * 0.3);
-    // the base over the wall cloud stays: the wall cloud hangs from it on the inner side of the northern arm
-    let keep = ss(S.wall.z * 1.35, S.wall.z * 0.95, length(p.xy - S.wall.xy) + nsl * 0.5);
-    let hgt = zb + (1.5 + 2.5 * S.rfdb.w) * (0.55 + 0.45 * ss(0.3, -0.8, cos(th)));   // deepest toward the open, rear side
-    let slot = clamp(S.rfdb.w * hole * (1.0 - keep) * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
-    cloud *= 1.0 - slot;
-  }
-
   // ---- storm body: the deep cloud downstream of the updraft, over the forward-flank rain and hail, from cloud base
   // up into the anvil. Its underside rises downstream, so you see under it into the rain shafts.
   if (S.ffd.w > 0.0 && S.tower.z > 0.0) {
@@ -253,9 +241,30 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
     // rounded, not a cliff: the far end draws in toward the top and the bottom
     let hb = clamp((p.z - zb) / max(topb - zb, 1.0), 0.0, 1.0);
     let e = length(vec2f(u / (Lb * (0.75 + 0.35 * sin(3.1416 * hb))), v / Wb)) + n * 0.6;
-    let bv = 0.8 * ss(1.0, 0.7, e) * ss(bot - 0.1, bot + 0.5, p.z + n * 0.9) * ss(topb + 0.6, topb - 0.6, p.z + n * 0.8);
+    let bv = 0.8 * ss(1.0, 0.7, e) * ss(-R * 0.3, R * 0.6, dot(p.xy - S.up.xy, ax)) * ss(bot - 0.1, bot + 0.5, p.z + n * 0.9) * ss(topb + 0.6, topb - 0.6, p.z + n * 0.8);
     mw += bv * bv; ms += bv * bv * water(0.55);
     cloud = max(cloud, bv);
+  }
+
+  // ---- the rear-flank downdraft surge eats a notch up the back of the low updraft: the clear slot. Its outline in
+  // the base is the horseshoe (the flanking line and the rest of the storm are added after, so they keep their bases)
+  if (S.rfdb.z > 0.0) {
+    let db = p.xy - S.rfdb.xy; let rb = length(db); let Rs = S.rfdb.z;
+    let th = atan2(dot(db, lf), dot(db, fw));
+    let nsl = n3(vec3f(p.x * 0.35, p.y * 0.35, p.z * 0.25) + vec3f(0.7, 0.7, 0.1)) - 0.5;
+    // the slot: inside the horseshoe, and out through its open, rear side to clear air behind the storm, so from the
+    // front you see daylight through it under the base
+    let od = cos(2.18) * fw + sin(2.18) * lf;               // the opening faces the rear, west for a NE mover (+125 deg)
+    let u = dot(db, od); let vv = abs(dot(db, vec2f(-od.y, od.x)));
+    let chan = ss(-0.5, 0.5, u) * ss(Rs * (0.85 + 0.08 * u), Rs * (0.55 + 0.08 * u), vv + nsl * Rs * 0.3);
+    let hole = max(ss(Rs * 0.85, Rs * 0.55, rb + nsl * Rs * 0.3), chan);
+    // the base over the wall cloud stays: the wall cloud hangs from it on the inner side of the northern arm
+    let keep = ss(S.wall.z * 1.35, S.wall.z * 0.95, length(p.xy - S.wall.xy) + nsl * 0.5);
+    // a deep notch, up through most of the storm's lower half, deepest toward the open rear side: looking up through
+    // it you see light, not the underside of the updraft
+    let hgt = zb + (2.5 + 5.5 * S.rfdb.w) * (0.6 + 0.4 * ss(0.3, -0.8, cos(th)));
+    let slot = clamp(S.rfdb.w * hole * (1.0 - keep) * ss(hgt + 1.0, hgt - 0.9, p.z + nsl * 1.8), 0.0, 1.0);
+    cloud *= 1.0 - slot;
   }
 
   // ---- anvil: a wedge spreading downwind from the top of the updraft. Thick and lumpy where it leaves the tower,
@@ -616,10 +625,10 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         // the wall cloud and the funnel are one cloud: smooth union, then the same threshold and light
         let nw = select(0.0, nearField(q, 1.0), nearOn);
         let nv = smax(nw, tv.x, 0.15);
-        let bn = smoothstep(0.22, 0.38, nv) * U.a.w * 0.8;
+        // the funnel's own share: a softer, more translucent edge than the wall cloud, a little darker and cooler
+        let fs = clamp((tv.x - nw) * 3.0 + 0.5, 0.0, 1.0) * step(0.001, tv.x);
+        let bn = mix(smoothstep(0.22, 0.38, nv), smoothstep(0.12, 0.6, nv) * 0.75, fs) * U.a.w * 0.8;
         if (bn > 0.0) {
-          // the funnel's own share is a little darker and cooler, as condensation in the vortex usually looks
-          let fs = clamp((tv.x - nw) * 3.0 + 0.5, 0.0, 1.0) * step(0.001, tv.x);
           // lowered cloud is lit mostly from the side and below: darker the further it hangs under the base
           let under = 0.6 + 0.4 * smoothstep(S.base.x - 0.5, S.base.x + 0.1, q.z);
           let c = (sunc * (lt.r * ph * 1.4) + skyc * (0.2 + 0.55 * lt.g)) * under + vec3f(0.27, 0.29, 0.3) * 0.45;
@@ -630,13 +639,22 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
         let br = s.g * s.g * U.b.x;
         let hq = length(q.xy - S.hail.xy) / max(S.hail.z, 0.5);
         let hw = S.hail.w * exp(-hq * hq);
-        let pc = mix(vec3f(0.55, 0.6, 0.66), vec3f(0.8, 0.88, 0.86), clamp(hw, 0.0, 1.0)) * (sunc * lt.r * 0.9 + skyc * (0.35 + 0.5 * lt.g));
+        let fwd = 1.0 + 2.2 * pow(max(cosg, 0.0), 4.0);     // rain scatters forward: curtains glow against the light
+        let pc = mix(vec3f(0.55, 0.6, 0.66), vec3f(0.8, 0.88, 0.86), clamp(hw, 0.0, 1.0)) * (sunc * lt.r * 0.9 * fwd + skyc * (0.35 + 0.5 * lt.g));
         be += br; Lc += pc * br;
       }
       if (tv.y > 0.0) {
         // dust and debris: lit like the ground beneath, fading into the haze
         let tl = sunc * lt.r * 0.8 + skyc * (0.3 + 0.5 * lt.g) + vec3f(0.27, 0.29, 0.3) * 0.3;
         be += tv.y; Lc += tl * vec3f(0.5, 0.44, 0.37) * tv.y;
+      }
+      // light shafts: haze under the storm (where the sky is hidden overhead) lit where sunlight gets through, i.e. the
+      // clear slot, and dark in the storm's shadow
+      if (q.z < S.base.x + 0.3 && lt.g < 0.9) {
+        let ks = 0.05 * (1.0 - lt.g);
+        let sc = sunc * lt.r * (0.25 + 2.4 * pow(max(cosg, 0.0), 6.0)) * 0.9;
+        let ah = 1.0 - exp(-ks * dt);
+        col += T * ah * sc; T *= 1.0 - ah;
       }
       if (be > 0.0005) {
         let a = 1.0 - exp(-be * dt);

@@ -42,7 +42,7 @@ describe('designed storm', () => {
     }
   });
 
-  test('the RFD surge: cyclonic tornado at its northern curl, the rare anticyclonic one at its southern curl', () => {
+  test('the RFD horseshoe: wall cloud and tornado inside it, the rare anticyclonic tornado at the southern tip', () => {
     const P = plan('plains');
     assert.ok(P.antiTornado, 'the plains outbreak storm is the one that can put down an anticyclonic tornado');
     for (const k of ['dixie', 'ohio', 'hail', 'lp']) assert.ok(!plan(k).antiTornado, `${k} should not`);
@@ -50,17 +50,15 @@ describe('designed storm', () => {
     for (let t = 30; t <= P.duration; t += 0.5) {
       const a = stormAt(P, t, 0).params, at = (i: number): [number, number] => [a[i * 4], a[i * 4 + 1]];
       const [rx, ry] = at(18), Rs = a[18 * 4 + 2];
-      if (Rs <= 0) continue;
-      if (a[13 * 4 + 2] > 0.5) {
-        // tornado top on the surge's edge, north of its centre (the left of the storm's motion)
-        const [tx, ty] = at(15), [lx, ly] = [a[2], a[3]];
-        assert.ok(Math.abs(Math.hypot(tx - rx, ty - ry) - Rs) < 0.05, `tornado on the surge edge at ${t}`);
-        assert.ok((tx - rx) * lx + (ty - ry) * ly > 0, `tornado on the northern (left) side at ${t}`);
-      }
+      if (Rs <= 0 || a[18 * 4 + 3] <= 0) continue;
+      const [wx, wy] = at(6);
+      assert.ok(Math.hypot(wx - rx, wy - ry) < Rs, `wall cloud inside the horseshoe at ${t}`);
+      assert.ok(wy > ry, `wall cloud on the northern side of the slot at ${t}`);
+      if (a[13 * 4 + 2] > 0.5) { const [tx, ty] = at(15); assert.ok(Math.hypot(tx - rx, ty - ry) < Rs, `tornado inside the horseshoe at ${t}`); }
       if (a[19 * 4 + 3] > 0.5) {
         sawAnti = true;
         const [sx, sy] = at(19), ty = at(15)[1];
-        assert.ok(Math.abs(Math.hypot(sx - rx, sy - ry) - Rs) < 0.05, `anticyclonic tornado on the surge edge at ${t}`);
+        assert.ok(Math.abs(Math.hypot(sx - rx, sy - ry) - Rs) < 0.05, `anticyclonic tornado on the horseshoe at ${t}`);
         assert.ok(sy < ty, 'anticyclonic tornado south of the main one');
       }
     }
