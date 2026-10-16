@@ -8,7 +8,7 @@ import { type Environment } from '../physics/environment';
 import { type ChaserRenderer } from '../render/chaser';
 import { getGPU } from '../render/gpu-device';
 import { baseFromEnvironment, type BaseState } from './base';
-import { COARSE_GRID, DEFAULT_GRID, FINE_GRID, stepFor, type GridSpec } from './grid';
+import { COARSE_GRID, DEFAULT_GRID, FINE_GRID, mixFor, stepFor, type GridSpec } from './grid';
 import { SimCPU } from './model-cpu';
 import { SimGPU } from './model-gpu';
 import { defaultNudge, START_NOISE } from './start';
@@ -61,9 +61,9 @@ class GpuDriver implements SimDriver {
   private constructor(readonly sim: SimGPU, readonly g: GridSpec, readonly base: BaseState, private renderer: ChaserRenderer) {}
 
   static async create(E: Environment, renderer: ChaserRenderer, g: GridSpec): Promise<GpuDriver> {
-    const base = baseFromEnvironment(g, E), dt = stepFor(g);
-    const sim = await SimGPU.create(renderer.device!, g, base, { dt });
-    const init = new SimCPU(g, base, { dt });             // initial state is built on the CPU and uploaded
+    const base = baseFromEnvironment(g, E), dt = stepFor(g), kh = mixFor(g);
+    const sim = await SimGPU.create(renderer.device!, g, base, { dt, kh });
+    const init = new SimCPU(g, base, { dt, kh });             // initial state is built on the CPU and uploaded
     init.addNoise(START_NOISE.amp, START_NOISE.zTop, START_NOISE.seed);
     sim.upload(init.f);
     sim.nudgeCfg = defaultNudge(g, dt);

@@ -6,6 +6,8 @@ export interface SimParams {
   kdiff: number;
   /** 4th-order horizontal filter strength: fraction of a 2-gridpoint wave removed per step */
   hyper: number;
+  /** horizontal eddy diffusivity, m^2/s (sub-grid turbulent mixing across the updraft's edges) */
+  kh: number;
   /** Kessler autoconversion rate (1/s) and threshold (kg/kg) */
   k1: number; qcCrit: number;
   /** accretion coefficient (1/s) */
@@ -19,7 +21,7 @@ export interface SimParams {
 }
 
 export const DEFAULT_PARAMS: SimParams = {
-  dt: 6, kdiff: 40, hyper: 0.08, k1: 1e-3, qcCrit: 1e-3, k2: 2.2,
+  dt: 6, kdiff: 40, hyper: 0.08, kh: 0, k1: 1e-3, qcCrit: 1e-3, k2: 2.2,
   spongeCells: 6, spongeTau: 300, dampZ: 12000, dampTau: 300,
   pIters: 24, omega: 1.5
 };

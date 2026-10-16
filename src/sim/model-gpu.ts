@@ -79,7 +79,7 @@ export class SimGPU {
     f.set([g.dx, g.dy, g.dz, p.dt], 4);
     f.set([p.kdiff, p.k1, p.qcCrit, p.k2], 8);
     f.set([p.spongeCells, p.spongeTau, p.dampZ, p.dampTau], 12);
-    f.set([p.omega, this.b.rho0[0], p.hyper, 0], 16);
+    f.set([p.omega, this.b.rho0[0], p.hyper, p.kh], 16);
     this.device.queue.writeBuffer(this.uP, 0, ab);
   }
 

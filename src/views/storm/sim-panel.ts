@@ -39,7 +39,7 @@ export const SIM_CARD_HTML = `
         </dl>
         <canvas id="smHist" style="display:block;width:100%;height:150px" aria-label="Updraft and rotation over the simulation"></canvas>
         <div id="smTor" style="display:grid;gap:6px"></div>
-        <p class="cap" id="smCap">The cloud model solves the equations of motion for the atmosphere you set, on a grid of 1 km boxes 400 m deep. Nothing in the storm is drawn by hand: it starts from a field of cumulus clouds and runs on its own.</p>
+        <p class="cap" id="smCap">The cloud model solves the equations of motion for the atmosphere you set, on a grid of 1 km boxes 400 m deep. Nothing in the storm is drawn by hand: after a forced start in the first 15 minutes it runs on its own.</p>
       </div>`;
 
 export interface SimHooks {
@@ -121,7 +121,7 @@ export class SimPanel {
     this.$('simNote').textContent = this.driver.kind === 'gpu'
       ? `On your GPU · ${g.NX}×${g.NY}×${g.NZ} grid, ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`}`
       : `On the CPU (no WebGPU) · coarser ${g.dx / 1000} km grid, slower${this.fine ? ' · the 500 m grid needs WebGPU' : ''}`;
-    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`} boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: it starts from a field of cumulus clouds and runs on its own.`;
+    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`} boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: after a forced start in the first 15 minutes it runs on its own.`;
     return true;
   }
 

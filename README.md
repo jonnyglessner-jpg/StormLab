@@ -39,10 +39,10 @@ The storm grows in a 3-D cloud model, the same kind of model research groups use
 | Equations | `src/sim/model-cpu.ts` | Anelastic, on a staggered (Arakawa C) grid, in a frame moving with the Bunkers right-mover; the 3-D view puts it back on the ground, so the storm drives across a one-mile grid of section roads |
 | Advection | | Semi-Lagrangian with MacCormack correction and a min/max limiter; departure points computed once per grid layout and shared by every field on it |
 | Microphysics | `src/sim/micro.ts` | Six classes: vapour, cloud water, rain, cloud ice, snow and hail. Kessler autoconversion and accretion; ice, snow and hail processes after Lin, Farley & Orville (1983) and Gilmore et al. (2004); mixed-phase saturation adjustment after Tao et al. (1989); rain, snow and hail fall at their own speeds |
-| Mixing | | Vertical eddy diffusion plus a 4th-order horizontal filter against 2-gridpoint noise |
+| Mixing | | Horizontal eddy diffusion (500 m²/s at 1 km, in proportion to the grid spacing) for sub-grid turbulence, vertical eddy diffusion, and a 4th-order horizontal filter against 2-gridpoint noise. Without the horizontal mixing updrafts collapse into several grid-scale cores instead of one broad, rotating updraft |
 | Pressure | | Projection onto div(ρ₀u) = 0, solved by red-black vertical-line relaxation |
 | Boundaries | | Lateral sponge, Rayleigh damping above 12 km, free-slip ground |
-| Start | `src/sim/start.ts` | A field of cumulus: a main forced updraft about 12 km across ringed by six smaller towers, switched on over the first 6 minutes and released by 18 (updraft nudging as in CM1, Naylor & Gilmore 2012), plus 0.1 K noise in the boundary layer. The cumulus sit under the cap until the main tower breaks through at about 12–15 minutes |
+| Start | `src/sim/start.ts` | One broad updraft (20 km across) forced for 15 min, as in CM1 (Naylor & Gilmore 2012), plus 0.1 K boundary-layer noise. A field of smaller forced towers was tried and dropped: they competed, and the storm split into several weak cells instead of one mesocyclone |
 | GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m, or an optional 160 × 160 × 40 grid at 500 m (about 6× the work) |
 | Fallback | `src/sim/sim.worker.ts` | CPU reference in a worker on a coarser grid when WebGPU is missing |
 | Output | `src/sim/diag.ts`, `src/views/storm/sim-radar.ts` | A radar-app map (fixed radar site, fictional counties, highways and towns; drag to scroll, wheel to zoom) with the storm moving across it: reflectivity (rain, snow and hail) and storm-relative velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
@@ -88,8 +88,7 @@ updraft at 50 / 60 / 70 min, 1 km grid):
 | 2,000 ft | 36 m/s | 22 m/s | 9 m/s |
 | 4,000 ft (preset default) | 41 m/s | 42 m/s | 32 m/s |
 
-These runs used a single 20 km forced updraft. With the cumulus-field start the Plains storm runs a little weaker
-(37 m/s at 50 min, 27 m/s at 60).
+These runs predate the horizontal mixing.
 
 The setups carry moisture depths: Plains and Dixie 4,000 ft, Ohio Valley 3,000 ft, the summer pulse 1,500 ft,
 and none for the High Plains LP and the capped case. Ohio Valley and Dixie storms last longer than before but still

@@ -10,7 +10,7 @@ export const STORM_HTML = `
   <header>
     <div class="eyebrow">3-D cloud model · ice and hail microphysics · runs on your GPU</div>
     <h1>Supercell Lab</h1>
-    <p class="lede">Pick a severe-weather setup and grow the storm. A cloud model solves the equations of motion for that atmosphere: cumulus build under the cap, one tower breaks through, and the storm organises, rotates, drops hail and may put down a tornado. Any tornado it makes opens in the Tornado Lab.</p>
+    <p class="lede">Pick a severe-weather setup and grow the storm. A cloud model solves the equations of motion for that atmosphere: an updraft breaks through the cap, and the storm organises into a rotating supercell that drops hail and may put down a tornado. Any tornado it makes opens in the Tornado Lab.</p>
   </header>
   <section class="bench">
     <div class="stagecol">
@@ -19,7 +19,7 @@ export const STORM_HTML = `
         <canvas id="svRadar" aria-label="Radar view of the storm" hidden style="display:block;width:100%;aspect-ratio:16/10;min-height:260px;background:#11171a"></canvas>
         <span class="tag tl" id="svTagL">—</span>
         <span class="tag tr" id="svTagR">—</span>
-        <div id="svStart" class="startover"><button type="button" id="svStartBtn">Grow the storm</button><p>Starts from a field of cumulus clouds and runs for up to two hours of storm time.</p></div>
+        <div id="svStart" class="startover"><button type="button" id="svStartBtn">Grow the storm</button><p>Runs for up to two hours of storm time.</p></div>
       </div>
       <div class="row" style="gap:10px">
         <div class="seg" role="group" aria-label="View" style="margin-left:0">
@@ -73,9 +73,9 @@ export const STORM_HTML = `
       <h2>What the model does</h2>
       <ol>
         <li><b>Atmosphere.</b> Each setup is a sounding and a hodograph: a well-mixed afternoon boundary layer up to cloud base, a humid layer above it on days with deep moisture, a capping inversion, the setup's mid-level lapse rate, and south-west flow veering with height. CAPE, CIN and helicity are worked out from them the way forecasters do.</li>
-        <li><b>Cloud model.</b> The anelastic equations of motion on a 3-D grid of 1 km boxes (500 m optional) 400 m deep, about 90 km across, moving with the storm. It is the same kind of model research groups use (CM1, WRF), simplified to run in a browser on your GPU (or, more slowly and coarsely, on the CPU).</li>
+        <li><b>Cloud model.</b> The anelastic equations of motion, with turbulent mixing, on a 3-D grid of 1 km boxes (500 m optional) 400 m deep, about 90 km across, moving with the storm. It is the same kind of model research groups use (CM1, WRF), simplified to run in a browser on your GPU (or, more slowly and coarsely, on the CPU).</li>
         <li><b>Clouds, rain, ice and hail.</b> Six kinds of water: vapour, cloud droplets, rain, cloud ice, snow and hail, with the processes that turn one into another (condensation, freezing, riming, melting, evaporation) and their own fall speeds. Evaporating rain and melting hail make the cold outflow.</li>
-        <li><b>Start.</b> A field of cumulus clouds is pushed up for the first few minutes, as along a weak boundary. Everything after that, the tower breaking the cap, the anvil, the mesocyclone, the hook and the hail, comes out of the equations.</li>
+        <li><b>Start.</b> For the first 15 minutes one broad updraft (about 20 km across) is pushed up from the boundary layer, the standard way research models start a storm. Everything after that, the tower breaking the cap, the anvil, the mesocyclone, the hook and the hail, comes out of the equations.</li>
         <li><b>Radar and tornadoes.</b> Reflectivity is computed from the rain, snow and hail; velocity from the winds along the radar beam. A 1 km grid can't resolve a tornado, so one is flagged when strong rotation near the ground sits under the updraft for a minute, and its strength is estimated from that rotation.</li>
       </ol>
     </div>

@@ -13,7 +13,7 @@ async function main() {
   const steps = +(q.get('steps') ?? 40);
   const g: GridSpec = { NX: 32, NY: 32, NZ: 20, dx: 2000, dy: 2000, dz: 750 };
   const base = baseFromProfile(g, weismanKlempProfile(0.0145, 30), 14.21, -1.6);
-  const params = { dt: 10, pIters: 12 };
+  const params = { dt: 10, pIters: 12, kh: 500 };
   const cpu = new SimCPU(g, base, params);
   cpu.addBubble({ x: 28000, y: 32000, z: 1400, rh: 10000, rz: 1400, dth: 3 });
   const adapter = await navigator.gpu.requestAdapter();

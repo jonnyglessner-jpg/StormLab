@@ -2,7 +2,7 @@
  * WGSL compute kernels for the cloud model. Each mirrors the matching method of SimCPU (model-cpu.ts).
  * Shared uniform P:
  *   n = (NX, NY, NZ, -)        d = (dx, dy, dz, dt)          k = (kdiff, k1, qcCrit, k2)
- *   s = (spongeCells, spongeTau, dampZ, dampTau)            m = (omega, rhoSurface, hyper, -)
+ *   s = (spongeCells, spongeTau, dampZ, dampTau)            m = (omega, rhoSurface, hyper, kh)
  * Per-dispatch uniform Lay (field layout):
  *   n = (nx, ny, nz, baseField+1 or 0)   o = (ox, oy, oz, isW)
  * Base-state uniform: bs(f, k) = value f at level k, f = 0 th0, 1 qv0, 2 pi0, 3 rho0, 4 p0, 5 u0, 6 v0, 7 rhoW
@@ -256,7 +256,7 @@ fn bk(k: u32) -> f32 {
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (!inLay(id)) { return; }
   let c = layIdx(id); let sy = L.n.x; let sz = L.n.x * L.n.y; let v = SRC[c];
-  let K = P.k.x * P.d.w; let az = K / (P.d.z * P.d.z); let nu = P.m.z / 64.0;
+  let K = P.k.x * P.d.w; let az = K / (P.d.z * P.d.z); let nu = P.m.z / 64.0; let ah = P.m.w * P.d.w / (P.d.x * P.d.x);
   let l = LAP[c];
   var xm = l; if (id.x > 0u) { xm = LAP[c - 1u]; }
   var xp = l; if (id.x < L.n.x - 1u) { xp = LAP[c + 1u]; }
@@ -265,7 +265,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
   let p0 = v - bk(id.z);
   var zm = p0; if (id.z > 0u) { zm = SRC[c - sz] - bk(id.z - 1u); }
   var zp = p0; if (id.z < L.n.z - 1u) { zp = SRC[c + sz] - bk(id.z + 1u); }
-  var out = v - nu * (xm + xp + ym + yp - 4.0 * l) + az * (zm + zp - 2.0 * p0);
+  var out = v - nu * (xm + xp + ym + yp - 4.0 * l) + ah * l + az * (zm + zp - 2.0 * p0);
   // relaxation
   let z = (f32(id.z) + L.o.z) * P.d.z; let ztop = f32(P.n.z) * P.d.z;
   var rz = 0.0;

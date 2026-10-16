@@ -17,6 +17,11 @@ export const DEFAULT_GRID: GridSpec = { NX: 96, NY: 96, NZ: 40, dx: 1000, dy: 10
 export const FINE_GRID: GridSpec = { NX: 160, NY: 160, NZ: 40, dx: 500, dy: 500, dz: 400 };
 /** Time step for a grid, s: 6 s at 1 km, shorter on finer grids. */
 export const stepFor = (g: GridSpec) => g.dx >= 2000 ? 10 : g.dx >= 1000 ? 6 : 3;
+/**
+ * Horizontal eddy diffusivity for a grid, m^2/s: 500 at 1 km, in proportion to the grid spacing (sub-grid
+ * turbulence grows with the box size; the square of it, as in a Smagorinsky closure, smothered storms at 2 km).
+ */
+export const mixFor = (g: GridSpec) => 500 * (g.dx / 1000);
 /** Coarser grid for the CPU fallback and quick tests. */
 export const COARSE_GRID: GridSpec = { NX: 48, NY: 48, NZ: 32, dx: 2000, dy: 2000, dz: 500 };
 

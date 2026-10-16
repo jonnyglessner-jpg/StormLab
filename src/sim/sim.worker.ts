@@ -4,7 +4,7 @@ import { environment, type EnvInput } from '../physics/environment';
 import { lightVolumeCPU } from '../physics/volume';
 import { baseFromEnvironment } from './base';
 import { diagCPU } from './diag';
-import { COARSE_GRID } from './grid';
+import { COARSE_GRID, mixFor } from './grid';
 import { MP } from './micro';
 import { SimCPU } from './model-cpu';
 import { type Nudge } from './params';
@@ -23,7 +23,7 @@ scope.onmessage = (e) => {
   const m = e.data;
   if (m.type === 'init') {
     const g = COARSE_GRID;
-    sim = new SimCPU(g, baseFromEnvironment(g, environment(m.env)), { dt: 10 });
+    sim = new SimCPU(g, baseFromEnvironment(g, environment(m.env)), { dt: 10, kh: mixFor(g) });
     sim.addNoise(START_NOISE.amp, START_NOISE.zTop, START_NOISE.seed);
     sim.nudgeCfg = m.nudge;
     return;

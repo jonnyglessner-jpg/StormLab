@@ -233,7 +233,7 @@ export class SimCPU {
    */
   private diffuse(a: Float32Array, L: Layout, base: Float32Array | null): void {
     const g = this.g, K = this.p.kdiff * this.p.dt, out = this.tmpA, lap = this.tmpB, n = L.nx * L.ny * L.nz;
-    const az = K / (g.dz * g.dz), sy = L.nx, sz = L.nx * L.ny, nu = this.p.hyper / 64;
+    const az = K / (g.dz * g.dz), sy = L.nx, sz = L.nx * L.ny, nu = this.p.hyper / 64, ah = this.p.kh * this.p.dt / (g.dx * g.dx);
     const bk = (k: number) => base ? base[Math.min(k, base.length - 1)] : 0;
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const c = (k * L.ny + j) * L.nx + i, v = a[c];
@@ -244,7 +244,7 @@ export class SimCPU {
       const c = (k * L.ny + j) * L.nx + i, v = a[c], l = lap[c];
       const xm = i > 0 ? lap[c - 1] : l, xp = i < L.nx - 1 ? lap[c + 1] : l, ym = j > 0 ? lap[c - sy] : l, yp = j < L.ny - 1 ? lap[c + sy] : l;
       const p0 = v - bk(k), zm = k > 0 ? a[c - sz] - bk(k - 1) : p0, zp = k < L.nz - 1 ? a[c + sz] - bk(k + 1) : p0;
-      out[c] = v - nu * (xm + xp + ym + yp - 4 * l) + az * (zm + zp - 2 * p0);
+      out[c] = v - nu * (xm + xp + ym + yp - 4 * l) + ah * l + az * (zm + zp - 2 * p0);
     }
     a.set(out.subarray(0, n));
   }
