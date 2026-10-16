@@ -107,17 +107,17 @@ export class SimCPU {
     let fx = x / g.dx - L.ox, fy = y / g.dy - L.oy, fz = z / g.dz - L.oz;
     fx = Math.min(Math.max(fx, 0), L.nx - 1.0001); fy = Math.min(Math.max(fy, 0), L.ny - 1.0001); fz = Math.min(Math.max(fz, 0), L.nz - 1.0001);
     const i = Math.floor(fx), j = Math.floor(fy), k = Math.floor(fz), sy = L.nx, sz = L.nx * L.ny, o = k * sz + j * sy + i;
-    let mn = a[o], mx = a[o];
-    for (const d of [1, sy, sy + 1, sz, sz + 1, sz + sy, sz + sy + 1]) { const v = a[o + d]; if (v < mn) mn = v; if (v > mx) mx = v; }
-    out[0] = mn; out[1] = mx;
+    const v0 = a[o], v1 = a[o + 1], v2 = a[o + sy], v3 = a[o + sy + 1], v4 = a[o + sz], v5 = a[o + sz + 1], v6 = a[o + sz + sy], v7 = a[o + sz + sy + 1];
+    out[0] = Math.min(v0, v1, v2, v3, v4, v5, v6, v7); out[1] = Math.max(v0, v1, v2, v3, v4, v5, v6, v7);
   }
   private vel(x: number, y: number, z: number, o: number[]): void {
     const { L, f } = this;
     o[0] = this.sample(f.u, L.u, x, y, z); o[1] = this.sample(f.v, L.v, x, y, z); o[2] = this.sample(f.w, L.w, x, y, z);
   }
   /** departure point of a parcel arriving at (x,y,z) after time s (negative s traces forward), RK2 */
+  private vtmp = [0, 0, 0];
   private depart(x: number, y: number, z: number, s: number, o: number[]): void {
-    const v = [0, 0, 0];
+    const v = this.vtmp;
     this.vel(x, y, z, v);
     const xm = x - 0.5 * s * v[0], ym = y - 0.5 * s * v[1], zm = z - 0.5 * s * v[2];
     this.vel(xm, ym, zm, v);
@@ -125,24 +125,32 @@ export class SimCPU {
   }
 
   /* ---------- advection ---------- */
-  /** MacCormack semi-Lagrangian advection of one field (in place, using the velocity at the start of the step). */
-  private advect(a: Float32Array, L: Layout): void {
-    const g = this.g, dt = this.p.dt, fwd = this.tmpA, out = this.tmpB, n = L.nx * L.ny * L.nz;
-    const d = [0, 0, 0], bnd = [0, 0];
-    for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
-      const x = (i + L.ox) * g.dx, y = (j + L.oy) * g.dy, z = (k + L.oz) * g.dz;
-      this.depart(x, y, z, dt, d);
-      fwd[(k * L.ny + j) * L.nx + i] = this.sample(a, L, d[0], d[1], d[2]);
-    }
+  /**
+   * Departure points for every point of a layout, forward (s = dt) and backward (s = -dt), using the velocity at
+   * the start of the step. All seven scalars share the cell-centre layout, so they share one set.
+   */
+  private depBuf = new Map<Layout, { f: Float64Array; b: Float64Array }>();
+  private departures(L: Layout): { f: Float64Array; b: Float64Array } {
+    const g = this.g, dt = this.p.dt, n = L.nx * L.ny * L.nz, d = [0, 0, 0];
+    let buf = this.depBuf.get(L);
+    if (!buf) { buf = { f: new Float64Array(3 * n), b: new Float64Array(3 * n) }; this.depBuf.set(L, buf); }
+    const F = buf.f, B = buf.b;
     for (let k = 0; k < L.nz; k++) for (let j = 0; j < L.ny; j++) for (let i = 0; i < L.nx; i++) {
       const c = (k * L.ny + j) * L.nx + i, x = (i + L.ox) * g.dx, y = (j + L.oy) * g.dy, z = (k + L.oz) * g.dz;
-      this.depart(x, y, z, -dt, d);
-      const back = this.sample(fwd, L, d[0], d[1], d[2]);
-      let v = fwd[c] + 0.5 * (a[c] - back);
-      this.depart(x, y, z, dt, d);
-      this.bounds(a, L, d[0], d[1], d[2], bnd);
-      v = Math.min(Math.max(v, bnd[0]), bnd[1]);
-      out[c] = v;
+      this.depart(x, y, z, dt, d); F[3 * c] = d[0]; F[3 * c + 1] = d[1]; F[3 * c + 2] = d[2];
+      this.depart(x, y, z, -dt, d); B[3 * c] = d[0]; B[3 * c + 1] = d[1]; B[3 * c + 2] = d[2];
+    }
+    return buf;
+  }
+  /** MacCormack semi-Lagrangian advection of one field (in place), with precomputed departure points. */
+  private advect(a: Float32Array, L: Layout, dep: { f: Float64Array; b: Float64Array }): void {
+    const fwd = this.tmpA, out = this.tmpB, n = L.nx * L.ny * L.nz, F = dep.f, B = dep.b, bnd = [0, 0];
+    for (let c = 0; c < n; c++) fwd[c] = this.sample(a, L, F[3 * c], F[3 * c + 1], F[3 * c + 2]);
+    for (let c = 0; c < n; c++) {
+      const back = this.sample(fwd, L, B[3 * c], B[3 * c + 1], B[3 * c + 2]);
+      const v = fwd[c] + 0.5 * (a[c] - back);
+      this.bounds(a, L, F[3 * c], F[3 * c + 1], F[3 * c + 2], bnd);
+      out[c] = Math.min(Math.max(v, bnd[0]), bnd[1]);
     }
     a.set(out.subarray(0, n));
   }
@@ -335,13 +343,10 @@ export class SimCPU {
   /** Advance one time step. */
   step(): void {
     const { f, L } = this;
-    // advect with the velocity at the start of the step: momentum first into copies, then scalars
-    const adv = (a: Float32Array, lay: Layout) => this.advect(a, lay);
-    adv(f.th, L.c); adv(f.qv, L.c); adv(f.qc, L.c); adv(f.qr, L.c); adv(f.qi, L.c); adv(f.qs, L.c); adv(f.qh, L.c);
-    // momentum: advect copies so every component is carried by the same (old) velocity
-    const un = f.u.slice(), vn = f.v.slice(), wn = f.w.slice();
-    adv(un, L.u); adv(vn, L.v); adv(wn, L.w);
-    f.u.set(un); f.v.set(vn); f.w.set(wn);
+    // advect with the velocity at the start of the step: departure points first, then every field
+    const dc = this.departures(L.c), du = this.departures(L.u), dv = this.departures(L.v), dw = this.departures(L.w);
+    for (const a of [f.th, f.qv, f.qc, f.qr, f.qi, f.qs, f.qh]) this.advect(a, L.c, dc);
+    this.advect(f.u, L.u, du); this.advect(f.v, L.v, dv); this.advect(f.w, L.w, dw);
     this.microphysics();
     this.forcing();
     this.nudge();

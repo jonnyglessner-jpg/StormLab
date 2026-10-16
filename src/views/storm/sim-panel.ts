@@ -16,6 +16,9 @@ export const SIM_BAR_HTML = `
         <div class="seg" role="group" aria-label="Simulation speed" id="simSpeed" style="margin-left:0">
           <button data-speed="60">1 min/s</button><button data-speed="180" aria-pressed="true">3 min/s</button><button data-speed="Infinity">Fastest</button>
         </div>
+        <div class="seg" role="group" aria-label="Grid spacing" id="simGrid" style="margin-left:0" title="500 m boxes resolve the storm more sharply but take about six times the GPU work">
+          <button data-grid="1000" aria-pressed="true">1 km grid</button><button data-grid="500">500 m</button>
+        </div>
         <output id="simClock" style="font-family:var(--f-mono);font-size:13px">0:00</output>
         <span class="gpu-note" id="simNote"></span>
       </div>`;
@@ -67,6 +70,7 @@ export class SimPanel {
   torNow: TornadoEvent | null = null;
   private starting = false;
   private speed = 180;
+  private fine = false;
   private envAtStart: string | null = null;
   private $ = <T extends HTMLElement = HTMLElement>(id: string) => this.h.root.querySelector<T>('#' + id)!;
 
@@ -77,6 +81,13 @@ export class SimPanel {
       this.speed = Number(b.dataset.speed);
       if (this.driver) this.driver.speed = this.speed;
       this.h.root.querySelectorAll('[data-speed]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+    }));
+    this.h.root.querySelectorAll<HTMLButtonElement>('[data-grid]').forEach(b => b.addEventListener('click', () => {
+      const fine = b.dataset.grid === '500';
+      this.h.root.querySelectorAll('[data-grid]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+      if (fine === this.fine) return;
+      this.fine = fine;
+      if (this.driver) this.restart();     // a new grid means a new run
     }));
     this.drawHist();
   }
@@ -91,7 +102,7 @@ export class SimPanel {
     this.starting = true;
     this.$('simNote').textContent = 'Setting up the model…';
     try {
-      this.driver = await createDriver(E, this.h.renderer());
+      this.driver = await createDriver(E, this.h.renderer(), this.fine);
     } catch (e) {
       console.error(e);
       this.$('simNote').textContent = 'The simulation couldn’t start on this device.';
@@ -107,9 +118,9 @@ export class SimPanel {
     this.driver.onDiag = f => this.onDiag(f);
     const g = this.driver.g;
     this.$('simNote').textContent = this.driver.kind === 'gpu'
-      ? `On your GPU · ${g.NX}×${g.NY}×${g.NZ} grid, ${g.dx / 1000} km`
-      : `On the CPU (no WebGPU) · coarser ${g.dx / 1000} km grid, slower`;
-    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx / 1000} km boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: it grows from a forced updraft in its first 15 minutes, then runs on its own.`;
+      ? `On your GPU · ${g.NX}×${g.NY}×${g.NZ} grid, ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`}`
+      : `On the CPU (no WebGPU) · coarser ${g.dx / 1000} km grid, slower${this.fine ? ' · the 500 m grid needs WebGPU' : ''}`;
+    this.$('smCap').textContent = `The cloud model solves the equations of motion for the atmosphere you set, on a grid of ${g.dx >= 1000 ? `${g.dx / 1000} km` : `${g.dx} m`} boxes ${g.dz} m deep. Nothing in the storm is drawn by hand: it grows from a forced updraft in its first 15 minutes, then runs on its own.`;
     return true;
   }
 

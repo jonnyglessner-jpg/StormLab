@@ -73,48 +73,62 @@ fn layPos(id: vec3u) -> vec3f { return vec3f((f32(id.x) + L.o.x) * P.d.x, (f32(i
 fn layIdx(id: vec3u) -> u32 { return (id.z * L.n.y + id.y) * L.n.x + id.x; }
 fn inLay(id: vec3u) -> bool { return id.x < L.n.x && id.y < L.n.y && id.z < L.n.z; }`;
 
-/** MacCormack pass 1: forward semi-Lagrangian sample into TMP. */
-export const ADV1 = /* wgsl */`${HEAD}
+/**
+ * Departure points for every point of one layout, using the velocity at the start of the step: forward (s = dt)
+ * into DEP[6c..6c+2], backward (s = -dt) into DEP[6c+3..6c+5]. Computed once per layout and shared by every field
+ * on it (all seven scalars use the cell-centre layout).
+ */
+export const DEP = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<uniform> L: Lay;
 @group(0) @binding(2) var<storage, read> U: array<f32>;
 @group(0) @binding(3) var<storage, read> V: array<f32>;
 @group(0) @binding(4) var<storage, read> W: array<f32>;
-@group(0) @binding(5) var<storage, read> SRC: array<f32>;
-@group(0) @binding(6) var<storage, read_write> TMP: array<f32>;
+@group(0) @binding(5) var<storage, read_write> DP: array<f32>;
 ${VEL}
+${LAYPOS}
+@compute @workgroup_size(8, 8, 4)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  if (!inLay(id)) { return; }
+  let p = layPos(id); let c = 6u * layIdx(id);
+  let f = depart(p, P.d.w); let b = depart(p, -P.d.w);
+  DP[c] = f.x; DP[c + 1u] = f.y; DP[c + 2u] = f.z; DP[c + 3u] = b.x; DP[c + 4u] = b.y; DP[c + 5u] = b.z;
+}`;
+
+/** MacCormack pass 1: forward semi-Lagrangian sample into TMP. */
+export const ADV1 = /* wgsl */`${HEAD}
+@group(0) @binding(0) var<uniform> P: Params;
+@group(0) @binding(1) var<uniform> L: Lay;
+@group(0) @binding(2) var<storage, read> SRC: array<f32>;
+@group(0) @binding(3) var<storage, read> DP: array<f32>;
+@group(0) @binding(4) var<storage, read_write> TMP: array<f32>;
 ${sampler('sSrc', 'SRC', 'L.n.xyz', 'L.o.xyz')}
 ${LAYPOS}
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (!inLay(id)) { return; }
-  let d = depart(layPos(id), P.d.w);
-  TMP[layIdx(id)] = sSrc(d.x, d.y, d.z);
+  let c = layIdx(id); let q = 6u * c;
+  TMP[c] = sSrc(DP[q], DP[q + 1u], DP[q + 2u]);
 }`;
 
 /** MacCormack pass 2: backward sample of TMP, correction, min/max limiter; result into DST. */
 export const ADV2 = /* wgsl */`${HEAD}
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<uniform> L: Lay;
-@group(0) @binding(2) var<storage, read> U: array<f32>;
-@group(0) @binding(3) var<storage, read> V: array<f32>;
-@group(0) @binding(4) var<storage, read> W: array<f32>;
-@group(0) @binding(5) var<storage, read> SRC: array<f32>;
-@group(0) @binding(6) var<storage, read> TMP: array<f32>;
-@group(0) @binding(7) var<storage, read_write> DST: array<f32>;
-${VEL}
+@group(0) @binding(2) var<storage, read> SRC: array<f32>;
+@group(0) @binding(3) var<storage, read> TMP: array<f32>;
+@group(0) @binding(4) var<storage, read> DP: array<f32>;
+@group(0) @binding(5) var<storage, read_write> DST: array<f32>;
 ${sampler('sSrc', 'SRC', 'L.n.xyz', 'L.o.xyz')}
 ${sampler('sTmp', 'TMP', 'L.n.xyz', 'L.o.xyz')}
 ${LAYPOS}
 @compute @workgroup_size(8, 8, 4)
 fn main(@builtin(global_invocation_id) id: vec3u) {
   if (!inLay(id)) { return; }
-  let p = layPos(id); let c = layIdx(id);
-  let db = depart(p, -P.d.w);
-  let back = sTmp(db.x, db.y, db.z);
-  var v = TMP[c] + 0.5 * (SRC[c] - back);
-  let df = depart(p, P.d.w);
-  let b = sSrc_bounds(df.x, df.y, df.z);
+  let c = layIdx(id); let q = 6u * c;
+  let back = sTmp(DP[q + 3u], DP[q + 4u], DP[q + 5u]);
+  let v = TMP[c] + 0.5 * (SRC[c] - back);
+  let b = sSrc_bounds(DP[q], DP[q + 1u], DP[q + 2u]);
   DST[c] = clamp(v, b.x, b.y);
 }`;
 

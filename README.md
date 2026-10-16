@@ -42,13 +42,13 @@ is the time-stepping alternative.
 | Piece | Where | Details |
 | --- | --- | --- |
 | Equations | `src/sim/model-cpu.ts` | Anelastic, on a staggered (Arakawa C) grid, in a frame moving with the Bunkers right-mover |
-| Advection | | Semi-Lagrangian with MacCormack correction and a min/max limiter |
+| Advection | | Semi-Lagrangian with MacCormack correction and a min/max limiter; departure points computed once per grid layout and shared by every field on it |
 | Microphysics | `src/sim/micro.ts` | Six classes: vapour, cloud water, rain, cloud ice, snow and hail. Kessler autoconversion and accretion; ice, snow and hail processes after Lin, Farley & Orville (1983) and Gilmore et al. (2004); mixed-phase saturation adjustment after Tao et al. (1989); rain, snow and hail fall at their own speeds |
 | Mixing | | Vertical eddy diffusion plus a 4th-order horizontal filter against 2-gridpoint noise |
 | Pressure | | Projection onto div(ρ₀u) = 0, solved by red-black vertical-line relaxation |
 | Boundaries | | Lateral sponge, Rayleigh damping above 12 km, free-slip ground |
 | Start | | Updraft nudging for 15 min (Naylor & Gilmore 2012, as in CM1) |
-| GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m |
+| GPU | `src/sim/gpu-kernels.ts`, `model-gpu.ts` | WGSL kernels mirroring the CPU code; 96 × 96 × 40 grid, 1 km × 400 m, or an optional 160 × 160 × 40 grid at 500 m (about 6× the work) |
 | Fallback | `src/sim/sim.worker.ts` | CPU reference in a worker on a coarser grid when WebGPU is missing |
 | Output | `src/sim/diag.ts` | Radar reflectivity (rain, snow and hail) and velocity at 600 m, vorticity, cold pool, rain, hail size at the ground and a ground-relative hail swath; tornado tracker |
 
@@ -65,13 +65,27 @@ Checked against CM1 with the same Weisman–Klemp environment at 1 km:
 | Cold pool | −8 to −11 K | −4 to −8 K |
 | Hail at the ground | up to about 1¾ in | — |
 
-With ice the WK storm stays strong through the hour. The Plains preset still peaks at about 25 minutes and
-decays by about 50: lowering the rain evaporation or the cold pool doesn't change that, so the cause isn't the
-microphysics.
+With ice the WK storm stays strong through the hour. The Plains preset peaks at about 25 minutes and decays by
+about 50. Tests on that storm (1 km unless noted, peak updraft at 50 / 60 min):
+
+| Change | 50 min | 60 min |
+| --- | --- | --- |
+| None | 20 m/s | 13 m/s |
+| 500 m grid | 31 m/s | 12 m/s |
+| 250 m vertical spacing | 21 m/s | 8 m/s |
+| 96 km domain | 19 m/s | 5 m/s |
+| Weaker horizontal filter, or a quarter of the vertical diffusion | 19–21 m/s | 10–13 m/s |
+| Weaker rain evaporation (warmer cold pool) | 23 m/s | 10 m/s |
+| Air at 3–10 km moistened to 75% humidity | 26 m/s | 16 m/s |
+| Air at 1.2–3 km moistened to 75% humidity | 54 m/s | 47 m/s |
+
+So the storm is starved by the layer just above the moist boundary layer: the Plains sounding's moisture is only
+about 1.1 km deep, with 50–60% humidity from there to 3 km, and the storm feeds on air from the lowest 3 km. Grid
+spacing, mixing, the domain and the microphysics don't change the outcome.
 
 **Limits.** Single-moment microphysics: each class has a fixed size distribution, so hail size is estimated from
 the hail content (the model tops out near 2 in and can't make giant hail), and hail cores read high on radar (up
-to about 80 dBZ). No surface friction, no radiation, a uniform environment. Storms in capped environments fade
+to about 80 dBZ). No surface friction, no radiation, a uniform environment. Storms fed by a shallow moist layer fade
 within an hour. A 1 km grid resolves the storm and its mesocyclone, not the tornado. Tornadoes are flagged when
 strong near-ground rotation sits under the low-level updraft for at least a minute, and their strength is an
 estimate scaled from that circulation.
@@ -96,6 +110,6 @@ Browser checks (headless Chromium with WebGPU):
 
 ## Roadmap
 
-1. Storm longevity in capped environments: surface friction and a finer grid in the cloud model.
+1. Storm longevity: a deeper moist layer (or a moisture-depth control) in the sounding.
 2. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
 3. Tornado and wall cloud drawn in the 3-D view, and a storm-following camera for the simulation.

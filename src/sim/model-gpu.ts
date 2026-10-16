@@ -5,7 +5,7 @@
  * A always holds the current state between steps.
  */
 import { type BaseState } from './base';
-import { ADV1, ADV2, BUOY, DIAGW, DIAGZ, DIFFRELAX, DIV, GRAD, LAPH, LINE, MICRO, NUDGE, PACK, SED } from './gpu-kernels';
+import { ADV1, ADV2, BUOY, DEP, DIAGW, DIAGZ, DIFFRELAX, DIV, GRAD, LAPH, LINE, MICRO, NUDGE, PACK, SED } from './gpu-kernels';
 import { nC, nU, nV, nW, type GridSpec } from './grid';
 import { type SimFields } from './model-cpu';
 import { DEFAULT_PARAMS, type Nudge, type SimParams } from './params';
@@ -26,6 +26,8 @@ export class SimGPU {
   A: Record<FieldName, GPUBuffer>;
   B: Record<FieldName, GPUBuffer>;
   phi: GPUBuffer; div: GPUBuffer; tmp: GPUBuffer;
+  /** departure points of the layout being advected, 6 floats per point */
+  dep: GPUBuffer;
   /** accumulated rain [0, plane) and hail [plane, 2 plane), mm */
   acc: GPUBuffer;
   /** base state, a uniform buffer of 8 x 65 floats */
@@ -57,7 +59,7 @@ export class SimGPU {
     const mk = (tag: string) => Object.fromEntries(FIELDS.map(f => [f, buf(sizes[f], `${tag}.${f}`)])) as Record<FieldName, GPUBuffer>;
     this.A = mk('A'); this.B = mk('B');
     this.phi = buf(nC(g), 'phi'); this.div = buf(nC(g), 'div');
-    this.tmp = buf(Math.max(nU(g), nV(g), nW(g)), 'tmp'); this.acc = buf(2 * g.NX * g.NY, 'acc');
+    this.tmp = buf(Math.max(nU(g), nV(g), nW(g)), 'tmp'); this.dep = buf(6 * Math.max(nU(g), nV(g), nW(g)), 'dep'); this.acc = buf(2 * g.NX * g.NY, 'acc');
     this.base = device.createBuffer({ size: 8 * BS * 4, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, label: 'base' });
     const bd = new Float32Array(8 * BS);
     const put = (f: number, a: Float32Array) => { for (let k = 0; k < a.length; k++) bd[f * BS + k] = a[k]; };
@@ -95,8 +97,8 @@ export class SimGPU {
       if (errs.length) throw new Error(`${label}: ${errs.map(e => `${e.lineNum}:${e.linePos} ${e.message}`).join('; ')}`);
       return d.createComputePipeline({ layout: 'auto', compute: { module: m, entryPoint: 'main' }, label });
     };
-    const [pAdv1, pAdv2, pMicro, pSed, pBuoy, pDiff, pDiv, pLine, pGrad, pNudge, pLap] = await Promise.all([
-      mod(ADV1, 'adv1'), mod(ADV2, 'adv2'), mod(MICRO, 'micro'), mod(SED, 'sed'),
+    const [pDep, pAdv1, pAdv2, pMicro, pSed, pBuoy, pDiff, pDiv, pLine, pGrad, pNudge, pLap] = await Promise.all([
+      mod(DEP, 'dep'), mod(ADV1, 'adv1'), mod(ADV2, 'adv2'), mod(MICRO, 'micro'), mod(SED, 'sed'),
       mod(BUOY, 'buoy'), mod(DIFFRELAX, 'diffrelax'), mod(DIV, 'div'), mod(LINE, 'line'), mod(GRAD, 'grad'), mod(NUDGE, 'nudge'), mod(LAPH, 'laph')
     ]);
     const lay = (f: FieldName, baseIdx: number) => {
@@ -112,11 +114,13 @@ export class SimGPU {
     const P = B(this.uP), cells: [number, number, number] = [g.NX, g.NY, g.NZ];
     const add = (pipe: GPUComputePipeline, res: GPUBindingResource[], w: [number, number, number]) => this.passes.push({ pipe, bind: bg(pipe, res), wg: w });
 
-    // 1. advection A -> B
+    // 1. advection A -> B: departure points once per layout, then every field on that layout
+    let lastLayout = '';
     for (const f of FIELDS) {
-      const L = lay(f, 0);
-      add(pAdv1, [P, B(L.buf), B(this.A.u), B(this.A.v), B(this.A.w), B(this.A[f]), B(this.tmp)], wg(L.n));
-      add(pAdv2, [P, B(L.buf), B(this.A.u), B(this.A.v), B(this.A.w), B(this.A[f]), B(this.tmp), B(this.B[f])], wg(L.n));
+      const L = lay(f, 0), key = f === 'u' || f === 'v' || f === 'w' ? f : 'c';
+      if (key !== lastLayout) { add(pDep, [P, B(L.buf), B(this.A.u), B(this.A.v), B(this.A.w), B(this.dep)], wg(L.n)); lastLayout = key; }
+      add(pAdv1, [P, B(L.buf), B(this.A[f]), B(this.dep), B(this.tmp)], wg(L.n));
+      add(pAdv2, [P, B(L.buf), B(this.A[f]), B(this.tmp), B(this.dep), B(this.B[f])], wg(L.n));
     }
     // 2. microphysics and sedimentation on B
     const Bq = (...f: FieldName[]) => f.map(k => B(this.B[k]));
@@ -219,7 +223,7 @@ export class SimGPU {
 
   destroy(): void {
     for (const r of [this.A, this.B]) for (const k of FIELDS) r[k].destroy();
-    for (const b of [this.phi, this.div, this.tmp, this.acc, this.base, this.uP, this.uN]) b.destroy();
+    for (const b of [this.phi, this.div, this.tmp, this.dep, this.acc, this.base, this.uP, this.uN]) b.destroy();
     this.densTex?.destroy(); this.diag?.destroy(); this.diagStage?.destroy();
   }
 }

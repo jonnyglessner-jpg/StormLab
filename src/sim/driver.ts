@@ -8,7 +8,7 @@ import { type Environment } from '../physics/environment';
 import { type ChaserRenderer } from '../render/chaser';
 import { getGPU } from '../render/gpu-device';
 import { baseFromEnvironment, type BaseState } from './base';
-import { COARSE_GRID, DEFAULT_GRID, type GridSpec } from './grid';
+import { COARSE_GRID, DEFAULT_GRID, FINE_GRID, stepFor, type GridSpec } from './grid';
 import { SimCPU } from './model-cpu';
 import { SimGPU } from './model-gpu';
 import { type Nudge } from './params';
@@ -42,10 +42,11 @@ export function defaultNudge(g: GridSpec): Nudge {
   return { x: g.NX * g.dx * 0.45, y: g.NY * g.dy * 0.5, z: 1500, rh: 10000, rz: 1500, wmax: 10, tau: 6, tEnd: 900 };
 }
 
-export async function createDriver(E: Environment, renderer: ChaserRenderer | null): Promise<SimDriver> {
+/** Start a simulation: on the GPU when there is one (fine = the 500 m grid), otherwise on the CPU's coarse grid. */
+export async function createDriver(E: Environment, renderer: ChaserRenderer | null, fine = false): Promise<SimDriver> {
   if (renderer?.kind === 'webgpu' && renderer.device && renderer.attachTexture) {
     const gpu = await getGPU();
-    if (gpu) return GpuDriver.create(E, renderer);
+    if (gpu) return GpuDriver.create(E, renderer, fine ? FINE_GRID : DEFAULT_GRID);
   }
   return new CpuDriver(E, renderer);
 }
@@ -59,16 +60,16 @@ class GpuDriver implements SimDriver {
   private carry = 0;
   private inFlight = false;
   private lastDiag = -1e9;
-  private maxBatch = 4;
+  private maxBatch = 2;
 
   private constructor(readonly sim: SimGPU, readonly g: GridSpec, readonly base: BaseState, private renderer: ChaserRenderer) {}
 
-  static async create(E: Environment, renderer: ChaserRenderer): Promise<GpuDriver> {
-    const g = DEFAULT_GRID, base = baseFromEnvironment(g, E);
-    const sim = await SimGPU.create(renderer.device!, g, base, { dt: 6 });
-    const init = new SimCPU(g, base, { dt: 6 });          // initial state is built on the CPU and uploaded
+  static async create(E: Environment, renderer: ChaserRenderer, g: GridSpec): Promise<GpuDriver> {
+    const base = baseFromEnvironment(g, E), dt = stepFor(g);
+    const sim = await SimGPU.create(renderer.device!, g, base, { dt });
+    const init = new SimCPU(g, base, { dt });             // initial state is built on the CPU and uploaded
     sim.upload(init.f);
-    sim.nudgeCfg = { ...defaultNudge(g), tau: 6 };
+    sim.nudgeCfg = { ...defaultNudge(g), tau: dt };
     sim.pack();
     const d = new GpuDriver(sim, g, base, renderer);
     d.attach();
