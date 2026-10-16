@@ -54,7 +54,7 @@ export function mountStorm(root: HTMLElement): () => void {
 
   /* ---------- camera: free look in ground coordinates ---------- */
   // the storm travels with its motion; the camera stays put unless "Move with the storm" is on
-  const cam: Camera = { az: -40, dist: 16, h: 0.12, tz: 1.6 };
+  const cam: Camera = { az: -70, dist: 24, h: 0.1, tz: 3 };   // from the south-south-east, the storm side-lit by the late sun
   let aimed = false, lastOff: [number, number] = [0, 0];
   const offset = (): [number, number] => plan ? [plan.motion[0] * t * 0.06, plan.motion[1] * t * 0.06] : [0, 0];   // km
   function aimAtStorm() {
@@ -121,7 +121,6 @@ export function mountStorm(root: HTMLElement): () => void {
       } else {
         cam.az = drag.az - dx * 0.3;
         cam.h = clamp(drag.h + dy * 0.01, 0.02, 30);
-        cam.tz = cam.h > 8 ? 2 : 1.6;
       }
       moving = true;
     });

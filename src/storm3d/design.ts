@@ -44,6 +44,8 @@ export interface StormPlan {
   anvilLen: number;
   /** wall cloud radius and lowering, km; rotation rate, rad/s */
   Rw: number; lower: number; spin: number;
+  /** mesocyclone's visible spin, rad/s (counter-clockwise) */
+  mesoSpin: number;
   /** tornado: whether the storm makes one, its type (0 slender .. 1 wedge), ground radius km */
   tornadic: boolean; torType: number; torR: number;
   /** total length of the lifecycle, min */
@@ -62,7 +64,7 @@ export function planStorm(E: Environment, S: StormDiag): StormPlan {
   const tiltAmt = 0.1 * clamp(E.shear6 / 25, 0, 1.4);
   const kind: StormPlan['kind'] = !S.forms ? (S.capped ? 'capped' : 'none') : S.mode === 'pulse' || S.mode === 'multicell' ? 'pulse' : 'supercell';
   const lp = S.precip === 'lp', hp = S.precip === 'hp';
-  const R = clamp(2.8 + 1.7 * clamp((S.w - 20) / 30, 0, 1), 2.4, 4.6) * (lp ? 0.85 : 1);
+  const R = clamp(2.2 + 1.3 * clamp((S.w - 20) / 30, 0, 1), 2.0, 3.5) * (lp ? 0.85 : 1);
   const tp = S.ptor > 0 ? tornadoParams(S, S.vMed) : null;
   const rcKm = tp ? tp.rc * 0.9144 / 1000 : 0.1;
   const meso = clamp(S.vLow / 20, 0.3, 1.2);
@@ -73,7 +75,7 @@ export function planStorm(E: Environment, S: StormDiag): StormPlan {
     wrap: hp ? 0.75 : 0, slot: hp ? 0.45 : lp ? 0.8 : 1, tail: lp ? 0.6 : hp ? 0.85 : 1,
     anvilLen: clamp(28 + 1.1 * E.srAnvil, 20, 62),
     Rw: clamp(1.1 + 0.9 * meso, 1.0, 2.2) * (hp ? 1.2 : 1), lower: clamp(0.25 + 0.3 * meso, 0.2, 0.6) * clamp(1.6 - zb / 2, 0.6, 1.3),
-    spin: 0.04 + 0.08 * meso,
+    spin: 0.04 + 0.08 * meso, mesoSpin: 0.025 + 0.03 * meso,
     tornadic: kind === 'supercell' && S.ptor >= 0.3,
     torType: rcKm < 0.07 ? 0.15 : rcKm < 0.18 ? 0.5 : 0.9, torR: clamp(rcKm, 0.03, 0.45),
     duration: kind === 'supercell' ? 110 : 70
@@ -98,13 +100,13 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   let anvilAmt = 0, anvilLen = 4, back = 1, mamm = 0;
   let wallAmt = 0, lower = 0, tailCloud = 0, scud = 0, wc = at2(-1.0, -0.8);
   let tailAmt = 0, ffdAmt = 0, hailAmt = 0, slot = 0, slotR = P.Rw + 1, rfdAmt = 0;
-  let flankAmt = 0, flankN = 0;
+  let flankAmt = 0, flankN = 0, mesoSpin = 0;
   let torAmt = 0, torGround = 0.1, torTop = 0.3, cond = 0, rope = 0, debris = 0;
   let torBot: [number, number] = wc, torTopP: [number, number] = wc;
 
   if (P.kind === 'supercell') {
     towerTop = P.zb + 1 + (P.el + 0.4 - P.zb - 1) * ramp(t, 0, 14);
-    towerR = P.R * (0.45 + 0.55 * ramp(t, 3, 18));
+    towerR = P.R * (0.8 + 0.2 * ramp(t, 4, 20));
     towerAmt = 1;
     overshoot = ramp(t, 14, 20) * (0.7 + 0.3 * Math.sin(t * 0.9));
     anvilAmt = ramp(t, 10, 20); anvilLen = 5 + P.anvilLen * ramp(t, 10, 55); back = 1.5 + 3 * ramp(t, 20, 40);
@@ -112,7 +114,8 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
     strat = P.striation * ramp(t, 20, 32);
     ffdAmt = P.ffd * ramp(t, 14, 24); hailAmt = P.hail * ramp(t, 18, 28);
     tailAmt = P.tail * ramp(t, 24, 34);
-    flankAmt = ramp(t, 18, 30); flankN = 4;
+    flankAmt = ramp(t, 18, 30); flankN = 6;
+    mesoSpin = P.mesoSpin * ramp(t, 16, 30);
     if (t >= CYCLE0) {
       const k = Math.floor((t - CYCLE0) / CYCLE), tau = (t - CYCLE0) - k * CYCLE;
       // the wall cloud forms under the rear-right of the updraft base, then occludes rearward and fades
@@ -167,9 +170,9 @@ export function stormAt(P: StormPlan, t: number, clock: number): StormFrame {
   const ffdC = P.kind === 'pulse' ? up : at2(P.ffd < 0.5 ? 9 : 6, P.ffd < 0.5 ? 6 : 4.5);
   const hailC = P.kind === 'pulse' ? up : at2(2.8, 2.2);
   set(0, fx, fy, lx, ly);
-  set(1, sx, P.el, clock, 0);
+  set(1, sx, P.el, clock, t);
   set(2, towerTop, towerR, towerAmt, strat);
-  set(3, P.tilt[0], P.tilt[1], overshoot, 0);
+  set(3, P.tilt[0], P.tilt[1], overshoot, mesoSpin);
   set(4, P.adir[0], P.adir[1], anvilLen, anvilAmt);
   set(5, P.el - 2.4, P.el + 0.25, mamm, back);
   set(6, wc[0], wc[1], P.Rw, wallAmt);
