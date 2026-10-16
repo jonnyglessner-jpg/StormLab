@@ -339,7 +339,7 @@ fn main(@builtin(global_invocation_id) id: vec3u) {
       let band = ss(0.03, 0.1, fr) * (1.0 - ss(0.4, 0.6, fr)) * lens;
       let depth = 0.7 * S.anvil2.z * band * dep;
       let mv = 0.85 * inPlan * step(0.03, depth) * ss(botz - depth - 0.04, botz - depth + 0.1, p.z) * (1.0 - ss(botz + 0.05, botz + 0.3, p.z));
-      mw += mv * mv; ms += mv * mv * icy(0.6);   // shaded like the anvil's underside, not as separate dark blobs
+      mw += mv * mv; ms += mv * mv * icy(0.95);   // shaded like the anvil's underside, not as separate dark blobs
       cloud = max(cloud, mv);
     }
   }
@@ -653,7 +653,30 @@ fn smax(a: f32, b: f32, k: f32) -> f32 { let h = max(k - abs(a - b), 0.0) / k; r
           let baseShade = smoothstep(S.base.x - 0.4, S.base.x + 1.5, q.z);
           // sun, sky, and light bounced up from the ground onto the base
           let bounce = vec3f(0.27, 0.29, 0.3) * (1.0 - baseShade) * 0.55;
-          var c = sunc * (lt.r * ph * 1.9 * selfSh) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) * (0.8 + 0.2 * selfSh) * skyOcc + bounce;
+          // the anvil: its underside is in the shade of the ice above it, dark and blue-grey; only its edges and top
+          // catch the sun. Probe up through the ice and toward the sun, further than the coarse light grid resolves
+          var iceSun = 1.0; var iceSky = 1.0;
+          if (ice > 0.05) {
+            let u1 = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 0.6)), 0.0).r;
+            let u2 = textureSampleLevel(dens, samp, uvw(q + vec3f(0.0, 0.0, 1.5)), 0.0).r;
+            let s1 = textureSampleLevel(dens, samp, uvw(q + U.sd.xyz * 1.2), 0.0).r;
+            let s2 = textureSampleLevel(dens, samp, uvw(q + U.sd.xyz * 3.0), 0.0).r;
+            let above = clamp((u1 - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((u2 - 0.1) * 3.0, 0.0, 1.0) * 0.45;
+            let sunward = clamp((s1 - 0.1) * 3.0, 0.0, 1.0) * 0.55 + clamp((s2 - 0.1) * 3.0, 0.0, 1.0) * 0.45;
+            // which way the surface faces: more ice above than below means an underside, in the anvil's own shade,
+            // lit only dimly by light scattered down through the ice; the top and the rim stay bright
+            // sampled over a couple of km horizontally, so mammatus lobes share the shade of the underside they hang from
+            var up = 0.0; var dn = 0.0;
+            for (var k = 0; k < 4; k++) {
+              let o = vec3f(cos(f32(k) * 1.571), sin(f32(k) * 1.571), 0.0) * 1.2;
+              up += textureSampleLevel(dens, samp, uvw(q + o + vec3f(0.0, 0.0, 1.0)), 0.0).r;
+              dn += textureSampleLevel(dens, samp, uvw(q + o - vec3f(0.0, 0.0, 1.0)), 0.0).r;
+            }
+            let under = smoothstep(0.0, 0.4, (up - 1.5 * dn) * 0.25);
+            iceSun = mix(1.0, (1.0 - 0.9 * sunward) * (1.0 - 0.85 * under), ice);
+            iceSky = mix(1.0, (1.0 - 0.6 * above) * (1.0 - 0.55 * under), ice);
+          }
+          var c = sunc * (lt.r * ph * 1.9 * selfSh * iceSun) + skyc * (0.24 + 0.6 * lt.g) * (0.75 + 0.25 * baseShade) * (0.8 + 0.2 * selfSh) * skyOcc * iceSky + bounce;
           c *= 1.0 - 0.38 * stri;
           be += bc; Lc += c * bc;
         }
