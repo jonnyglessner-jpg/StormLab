@@ -4,7 +4,7 @@ An interactive supercell and tornado simulator for weather education. Pick one o
 (`src/presets.ts`): a Plains tornado outbreak, a big hail day, Dixie Alley HP, Ohio Valley spring, High Plains LP,
 a capped bust day and a summer pulse storm. Then watch that setup's storm live out its life in 3-D, from towering
 cumulus to tornado and rope-out, with its sounding and hodograph. Any tornado the storm produces opens in a
-swirl-ratio vortex model.
+vortex model built from its wind field.
 
 Everything runs in the browser. The storm view needs **WebGPU** (Chrome or Edge).
 
@@ -31,7 +31,7 @@ Pushing to `main` runs the same checks on GitHub and deploys `dist/` to GitHub P
 | Storm | `src/storm3d/design.ts` | Turns the environment into a storm plan and, for any minute of its life, the size and place of each feature (below) |
 | Rendering | `src/storm3d/shaders.ts`, `renderer.ts` | WGSL compute pass paints the storm into a 3-D volume and lights it (sun and sky); render pass ray-marches it over a ground of fields and section roads, with the wall cloud, tail cloud, scud, inflow tail and tornado evaluated at full resolution near the ground |
 | Cloud model | `src/sim/` | Kept in the repo, not on the page (see below) |
-| Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, swirl-ratio regimes, corner flow, suction vortices, condensation funnel, damage swath. `src/physics/storm.ts` turns a simulated tornado into its parameters |
+| Tornado | `src/views/tornado/tornado-view.ts` | Burgers–Rott / Sullivan vortex, breakdown and two-cell regimes, corner flow, condensation funnel, damage swath. `src/physics/storm.ts` turns a simulated tornado into its parameters |
 
 ## The designed storm
 
@@ -175,5 +175,7 @@ Browser checks (headless Chromium with WebGPU):
 2. A fallback for browsers without WebGPU.
 3. Typed port of the tornado view (currently ported as-is with `@ts-nocheck`).
 
-Shelved: radar (reflectivity and velocity drawn from the same storm). The radar map code from the cloud model is
-kept in `src/views/storm/sim-radar.ts`.
+Shelved: radar (reflectivity and velocity drawn from the same storm; the radar map code from the cloud model is
+kept in `src/views/storm/sim-radar.ts`), and in the Tornado Lab the swirl-ratio slider and the multiple-vortex
+regime with its suction vortices (they never looked right; the code stays behind `SHELVE_MV` in
+`src/views/tornado/tornado-view.ts`, and the swirl ratio is now fixed by each preset).
