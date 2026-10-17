@@ -720,23 +720,31 @@ export function mountTornado(root: HTMLElement): () => void {
     for (let q0 = 0; q0 < svAct.length; q0++) {
       const k = svAct[q0], amp = SVt.amp[k], top = tubeTopAt(amp);
       if (top <= 0) continue;
+      // above its own condensation the vortex is still there, wrapped round the parent: on the funnel's surface it
+      // carries on as a helical ridge in the skin, fading out over a few core heights, so no rope ends at a cut
+      const zEnd = Math.min(0.85 * zc, Math.max(top, top + 3 * M.Hs));
       for (let py = Hg; py >= Hg - zc * s; py -= 2) {
-        const z = (Hg - py) / s; if (z >= top) break;
-        const rt = Math.min(tubeAt(z, amp), rCap); if (!(rt > 0)) continue;
+        const z = (Hg - py) / s; if (z >= zEnd) break;
+        const rf = rfAt(z), onFunnel = rf > 0;
+        if (z >= top && !onFunnel) break;
+        let rt;
+        if (z < top) {
+          rt = Math.min(tubeAt(z, amp), rCap);
+          if (!(rt > 0)) continue;
+          // a rope ending in the air (no funnel above it) tapers to a point; on the funnel it keeps its width
+          if (!onFunnel) rt *= Math.pow(clamp((top - z) / (0.5 * top), 0, 1), 0.7);
+          else { const w = sstep(0.5 * top, top, z); rt = Math.max(rt, 0.5 * rCap) * (1 - w) + 0.5 * rCap * w; }
+        } else rt = 0.5 * rCap;
         const a = SVt.th[k] - M.tilt * z / M.Hs;
         const sn = Math.sin(a);
         if ((sn < 0) !== front) continue;
         const rr = rt * s; if (rr < 0.4) continue;
-        const ro = svOrbit(z), rf = rfAt(z);
+        const ro = svOrbit(z);
         const cx = X0 + (axX(z) + ro * Math.cos(a)) * s;
         const dust = clamp(1 - z / (0.14 * zc), 0, 1) * dustOn;
-        const fade = clamp((top - z) / (0.35 * top), 0, 1);
-        // on the funnel's surface the rope is a ridge in the same cloud: subtle; free-standing below it: fuller
-        const onFunnel = rf > 0 ? 1 : 0;
-        // the near side of a rope wrapped round the funnel is hidden where it passes behind the funnel's limb
+        // fade: free rope over its top half; ridge over the stretch above the condensation top
+        const fade = onFunnel ? clamp((zEnd - z) / Math.max(zEnd - top, 1), 0, 1) : clamp((top - z) / (0.5 * top), 0, 1);
         const limb = onFunnel ? clamp(Math.abs(sn) * 1.4, 0.25, 1) : 1;
-        // on the funnel the rope is drawn a shade darker than the funnel's skin, so it reads as a ridge, with a
-        // thin lit edge on its sunward side
         const alpha = (front ? 0.7 : 0.4) * limb * Math.sqrt(fade);
         if (onFunnel && front) { tubeRow(ctx, cx + rr * 0.35, py - 2, rr * 1.15, 2.4, dust, alpha * 0.8, 0.72); tubeRow(ctx, cx - rr * 0.3, py - 2, rr * 0.5, 2.4, dust, alpha * 0.9, 1.12); }
         else tubeRow(ctx, cx, py - 2, rr, 2.4, dust, alpha * (onFunnel ? 0.6 : 1));
