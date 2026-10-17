@@ -145,7 +145,8 @@ export function mountTornado(root: HTMLElement): () => void {
     M.vsPeak = M.vp0 * 0.5 * Math.pow(2 / nu, 0.4);
     M.rs = rc * 0.28 / Math.sqrt(nu / 2);
     M.Hs = clamp(2.5 * rc, 60, 0.8 * zc);
-    M.tilt = 0.8;
+    // helical lean: the ropes wrap round the parent at about 45 degrees, so they read as horizontal-ish vortices
+    M.tilt = clamp(M.Hs / M.ro, 1.0, 3.0);
     M.tubeTop = new Float64Array(AMPS.length);
     for (let a = 0; a < AMPS.length; a++) {
       const o = a * NZ, am = AMPS[a];
@@ -694,34 +695,51 @@ export function mountTornado(root: HTMLElement): () => void {
     ctx.drawImage(FC, bx0, by0, bw, bh, bx0 * SC_, by0 * SC_, bw * SC_, bh * SC_);
   }
   const STOPS = [0, .12, .3, .5, .7, .88, 1];
-  function tubeRow(ctx, cx, py, rr, hgt, dust, alphaK) {
+  function tubeRow(ctx, cx, py, rr, hgt, dust, alphaK, shade = 1) {
     const g = ctx.createLinearGradient(cx - rr, 0, cx + rr, 0);
     for (const k of STOPS) {
       const u = 2 * k - 1, nz = Math.sqrt(Math.max(0, 1 - u * u));
-      const lum = 0.4 + 0.5 * Math.max(0, -0.55 * u + 0.83 * nz);
+      const lum = (0.4 + 0.5 * Math.max(0, -0.55 * u + 0.83 * nz)) * shade;
       const a = (0.25 + 0.65 * Math.pow(nz, 0.55)) * clamp(rr / 3, 0.4, 1) * alphaK;
       const R = (210 * (1 - dust) + 150 * dust) * lum, Gc = (214 * (1 - dust) + 124 * dust) * lum, B = (217 * (1 - dust) + 96 * dust) * lum;
       g.addColorStop(k, `rgba(${R | 0},${Gc | 0},${B | 0},${a.toFixed(3)})`);
     }
     ctx.fillStyle = g; ctx.fillRect(cx - rr, py, 2 * rr, hgt);
   }
+  /** Where a suction vortex sits at height z for drawing: on the parent funnel's surface where there is one, so the
+   * rope reads as a helical ridge wrapped round the funnel, and free-standing below the funnel's bottom. */
+  function svOrbit(z) {
+    const rf = rfAt(z);
+    return rf > 0 ? Math.max(rf * 0.97, 0.6 * M.ro) : M.ro;
+  }
   function drawTubes(ctx, front) {
     if (!svAct.length) return;
     const { Hg, X0, s } = VW, zc = M.zc;
     const dustOn = clamp((AN.peak / MPH - 85) / 40, 0, 1);
+    const rCap = 0.8 * M.rs;   // thin ropes, not cones
     for (let q0 = 0; q0 < svAct.length; q0++) {
       const k = svAct[q0], amp = SVt.amp[k], top = tubeTopAt(amp);
       if (top <= 0) continue;
       for (let py = Hg; py >= Hg - zc * s; py -= 2) {
         const z = (Hg - py) / s; if (z >= top) break;
-        const rt = tubeAt(z, amp); if (!(rt > 0)) continue;
+        const rt = Math.min(tubeAt(z, amp), rCap); if (!(rt > 0)) continue;
         const a = SVt.th[k] - M.tilt * z / M.Hs;
-        if ((Math.sin(a) < 0) !== front) continue;
+        const sn = Math.sin(a);
+        if ((sn < 0) !== front) continue;
         const rr = rt * s; if (rr < 0.4) continue;
-        const cx = X0 + (axX(z) + M.ro * Math.cos(a)) * s;
+        const ro = svOrbit(z), rf = rfAt(z);
+        const cx = X0 + (axX(z) + ro * Math.cos(a)) * s;
         const dust = clamp(1 - z / (0.14 * zc), 0, 1) * dustOn;
         const fade = clamp((top - z) / (0.35 * top), 0, 1);
-        tubeRow(ctx, cx, py - 2, rr, 2.4, dust, (front ? 0.95 : 0.7) * Math.sqrt(fade));
+        // on the funnel's surface the rope is a ridge in the same cloud: subtle; free-standing below it: fuller
+        const onFunnel = rf > 0 ? 1 : 0;
+        // the near side of a rope wrapped round the funnel is hidden where it passes behind the funnel's limb
+        const limb = onFunnel ? clamp(Math.abs(sn) * 1.4, 0.25, 1) : 1;
+        // on the funnel the rope is drawn a shade darker than the funnel's skin, so it reads as a ridge, with a
+        // thin lit edge on its sunward side
+        const alpha = (front ? 0.7 : 0.4) * limb * Math.sqrt(fade);
+        if (onFunnel && front) { tubeRow(ctx, cx + rr * 0.35, py - 2, rr * 1.15, 2.4, dust, alpha * 0.8, 0.72); tubeRow(ctx, cx - rr * 0.3, py - 2, rr * 0.5, 2.4, dust, alpha * 0.9, 1.12); }
+        else tubeRow(ctx, cx, py - 2, rr, 2.4, dust, alpha * (onFunnel ? 0.6 : 1));
       }
     }
   }
@@ -732,19 +750,20 @@ export function mountTornado(root: HTMLElement): () => void {
   let pfNext = 0;
   function spawnPuffs(dt) {
     if (!showDebris) return;
-    const Rsp = Math.max(2.5 * M.rc, svAct.length ? M.ro + 3 * M.rs : 0);
-    const tries = Math.round(1100 * dt + Math.random());
-    for (let k = 0; k < tries && pfCount < 480; k++) {
+    // the debris cloud hugs the vortex: spawn within about 1.5 core radii, and only where the wind is strong
+    const Rsp = Math.max(1.5 * M.rc, svAct.length ? M.ro + 1.5 * M.rs : 0);
+    const tries = Math.round(600 * dt + Math.random());
+    for (let k = 0; k < tries && pfCount < 260; k++) {
       const r = Rsp * Math.sqrt(Math.random()), th = Math.random() * TAU2, x = r * Math.cos(th), y = r * Math.sin(th);
       vel(x, y, 2, tmp);
-      const mph = Math.hypot(tmp[0] + M.vt, tmp[1]) / MPH, p = clamp((mph - 70) / 70, 0, 1);
+      const mph = Math.hypot(tmp[0] + M.vt, tmp[1]) / MPH, p = clamp((mph - 85) / 80, 0, 1);
       if (Math.random() > p) continue;
       let i = -1;
       for (let n = 0; n < NPF; n++) { const j = (pfNext + n) % NPF; if (!PF.on[j]) { i = j; break; } }
       if (i < 0) return; pfNext = i + 1;
       PF.on[i] = 1; PF.x[i] = axX(1) + x; PF.y[i] = axY(1) + y; PF.z[i] = 1 + Math.random() * 4;
       PF.vx[i] = tmp[0] * 0.5; PF.vy[i] = tmp[1] * 0.5; PF.vz[i] = 2 + Math.random() * 6;
-      PF.sz0[i] = PF.sz[i] = Math.max(3, (0.09 + 0.12 * Math.random()) * M.rc);
+      PF.sz0[i] = PF.sz[i] = Math.max(3, (0.07 + 0.1 * Math.random()) * M.rc);
       PF.age[i] = 0; PF.life[i] = 3 + Math.random() * 5; pfCount++;
       PF.kind[i] = Math.random() < 0.2 + 0.35 * p ? 1 : 0; PF.spr[i] = (Math.random() * 3) | 0;
     }
@@ -762,7 +781,7 @@ export function mountTornado(root: HTMLElement): () => void {
       let dx = PF.vx[i] * dt, dy = PF.vy[i] * dt, dz = PF.vz[i] * dt;
       const L = Math.hypot(dx, dy, dz); if (L > cap) { const f = cap / L; dx *= f; dy *= f; dz *= f; }
       PF.x[i] += dx; PF.y[i] += dy; PF.z[i] = Math.max(0.5, z + dz);
-      PF.sz[i] += PF.sz0[i] * 0.55 * dt; PF.age[i] += dt;
+      PF.sz[i] += PF.sz0[i] * 0.35 * dt; PF.age[i] += dt;
       if (PF.age[i] > PF.life[i]) PF.on[i] = 0; else pfCount++;
     }
   }
@@ -773,14 +792,14 @@ export function mountTornado(root: HTMLElement): () => void {
     if (c.width !== w2 || c.height !== h2) { c.width = w2; c.height = h2; }
     const ctx = c.getContext('2d'); ctx.clearRect(0, 0, w2, h2);
     const X0 = VW.X0 / 2, Hg = VW.Hg / 2, s = VW.s / 2, zc = M.zc, dustOn = clamp((AN.peak / MPH - 85) / 40, 0, 1);
-    const h0 = (0.15 + 0.2 * dustOn) * zc, h1 = (0.35 + 0.25 * dustOn) * zc;
+    const h0 = (0.1 + 0.15 * dustOn) * zc, h1 = (0.25 + 0.2 * dustOn) * zc;
     let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
     for (let i = 0; i < NPF; i++) {
       if (!PF.on[i]) continue;
       const z = PF.z[i];
       if (((PF.y[i] - axY(z)) < 0) !== front) continue;
       const a = PF.age[i] / PF.life[i];
-      const al = (PF.kind[i] ? 0.42 : 0.3) * sstep(0, 0.12, a) * (1 - sstep(0.55, 1, a)) * (1 - sstep(h0, h1, z));
+      const al = (PF.kind[i] ? 0.3 : 0.2) * sstep(0, 0.12, a) * (1 - sstep(0.55, 1, a)) * (1 - sstep(h0, h1, z));
       if (al < 0.01) continue;
       const dpx = clamp(PF.sz[i] * 2 * s, 2, 70), spr = PF.kind[i] ? PUFF.dark[PF.spr[i] % 2] : PUFF.dust[PF.spr[i]];
       const px = X0 + PF.x[i] * s - dpx / 2, py = Hg - z * s - dpx / 2;
