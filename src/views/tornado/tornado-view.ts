@@ -1,7 +1,6 @@
 // @ts-nocheck
 /*
- * Tornado Lab: a swirl-ratio vortex model (one-cell, vortex breakdown, two-cell, corner flow; the multiple-vortex
- * regime and the swirl slider are shelved, see SHELVE_MV),
+ * Tornado Lab: a swirl-ratio vortex model (one-cell, vortex breakdown, two-cell, multiple vortices, corner flow),
  * condensation funnel from cyclostrophic pressure, debris, damage swath and the parent storm's base.
  *
  * Ported as-is from the original single-page lab; type annotations are still to come (hence @ts-nocheck).
@@ -10,7 +9,7 @@
  */
 import { app } from '../../state';
 
-const BODY = "<div class=\"wrap\">\n  <header>\n    <div class=\"eyebrow\">Corner flow \u00b7 vortex breakdown \u00b7 condensation funnel</div>\n    <h1>Tornado Vortex Lab</h1>\n    <p class=\"lede\">A tornado built from its wind field. The balance between how much the air spins and how fast the updraft pulls it in sets the vortex's structure: a narrow one-cell jet, a breakdown bubble aloft, or a two-cell core with a central downdraft. The funnel is wherever the resulting pressure drop makes rising air condense. The balance drifts over time, so the structure keeps changing as you watch.</p>\n  </header>\n\n  <section class=\"bench\">\n    <div class=\"stagecol\">\n      <div class=\"stage\">\n        <canvas id=\"side\" aria-label=\"Side view of the simulated tornado, looking north\"></canvas>\n        <span class=\"tag tl\">Looking north \u00b7 storm moving east</span>\n        <span class=\"tag tr\" id=\"scaleTag\">\u2014</span>\n      </div>\n      <dl class=\"read\" aria-live=\"polite\">\n        <div class=\"wide\"><dt>Peak ground-relative wind</dt><dd><span id=\"rPeak\">\u2014</span><span class=\"ef\" id=\"rEF\">\u2014</span><small id=\"rPeakSub\">\u2014</small></dd></div>\n        <div class=\"wide\"><dt>Vortex structure</dt><dd><span id=\"rReg\">\u2014</span><small id=\"rRegSub\">\u2014</small></dd></div>\n        <div><dt>Lowest pressure</dt><dd id=\"rDp\">\u2014</dd></div>\n        <div><dt>Needed to condense at ground</dt><dd id=\"rNeed\">\u2014</dd></div>\n        <div><dt>Vortex breakdown</dt><dd id=\"rBd\">\u2014</dd></div>\n        <div><dt>Updraft</dt><dd id=\"rUp\">\u2014</dd></div>\n        <div><dt>Condensation funnel</dt><dd id=\"rFun\">\u2014</dd></div>\n        <div><dt>EF0+ path width</dt><dd id=\"rPath\">\u2014</dd></div>\n        <div><dt>Updraft radius</dt><dd id=\"rR0\">\u2014</dd></div>\n      </dl>\n      <div class=\"card\">\n        <div class=\"cardhead\">\n          <h2>Last 60 seconds</h2>\n          <div class=\"legend\">\n            <span><i class=\"ln\" style=\"color:var(--hot)\"></i>Peak ground wind</span>\n            <span><i class=\"ln d\" style=\"color:var(--accent)\"></i>Breakdown height</span>\n          </div>\n        </div>\n        <canvas id=\"hist\" aria-label=\"Peak ground wind and breakdown height over the last 60 seconds\"></canvas>\n      </div>\n    </div>\n\n    <aside class=\"rack\" aria-label=\"Controls\">\n      <div style=\"display:grid;gap:8px\">\n        <h2>Presets</h2>\n        <div class=\"presets\" role=\"group\" aria-label=\"Presets\">\n          <button data-p=\"rope\">Rope</button>\n          <button data-p=\"classic\" aria-pressed=\"true\">Classic</button>\n          <button data-p=\"wedge\">Wedge</button>\n          <button data-p=\"high\">High base</button>\n        </div>\n      </div>\n\n      <div class=\"sliders\">\n        <div class=\"sl\"><label for=\"un\">Unsteadiness</label><output id=\"o_un\"></output><input type=\"range\" id=\"un\" min=\"0\" max=\"100\" step=\"5\" value=\"50\"></div>\n        <div class=\"sl\"><label for=\"vrot\">Rotational wind aloft</label><output id=\"o_vrot\"></output><input type=\"range\" id=\"vrot\" min=\"20\" max=\"250\" step=\"1\"></div>\n        <div class=\"sl\"><label for=\"rc\">Core radius aloft</label><output id=\"o_rc\"></output><input type=\"range\" id=\"rc\" min=\"15\" max=\"500\" step=\"5\"></div>\n        <div class=\"sl\"><label for=\"zc\">Cloud base above ground</label><output id=\"o_zc\"></output><input type=\"range\" id=\"zc\" min=\"500\" max=\"5000\" step=\"50\"></div>\n        <div class=\"sl\"><label for=\"vt\">Forward speed</label><output id=\"o_vt\"></output><input type=\"range\" id=\"vt\" min=\"0\" max=\"60\" step=\"1\"></div>\n      </div>\n\n      <div class=\"row\">\n        <span>Precipitation</span>\n        <div class=\"seg\" role=\"group\" aria-label=\"Precipitation\">\n          <button data-r=\"lp\">Low</button><button data-r=\"classic\" aria-pressed=\"true\">Classic</button><button data-r=\"hp\">High</button>\n        </div>\n      </div>\n      <div class=\"row\">\n        <label><input type=\"checkbox\" id=\"air\" checked> Airflow tracers</label>\n        <label><input type=\"checkbox\" id=\"deb\" checked> Debris</label>\n        <label><input type=\"checkbox\" id=\"ltg\" checked> Lightning</label>\n      </div>\n      <div class=\"row\">\n        <button id=\"play\">Pause</button>\n        <div class=\"seg\" role=\"group\" aria-label=\"Playback speed\">\n          <button data-s=\"0.25\">\u00bc\u00d7</button><button data-s=\"0.5\">\u00bd\u00d7</button><button data-s=\"1\" aria-pressed=\"true\">1\u00d7</button><button data-s=\"2\">2\u00d7</button>\n        </div>\n      </div>\n    </aside>\n  </section>\n\n  <section class=\"lower\">\n    <div class=\"card\">\n      <div class=\"cardhead\">\n        <h2>Ground winds from above</h2>\n        <div class=\"seg\" role=\"group\" aria-label=\"Plan view mode\" style=\"margin-left:0\">\n          <button data-m=\"live\" aria-pressed=\"true\">Live</button><button data-m=\"swath\">Damage swath</button>\n        </div>\n      </div>\n      <canvas id=\"plan\" aria-label=\"Plan view of ground-relative wind speed, shaded by EF category\"></canvas>\n      <div class=\"legend\" id=\"efLegend\"></div>\n      <p class=\"cap\" id=\"planCap\">Ground-relative wind near the surface, north up. Forward motion adds to the rotation on the right (south) side of the track.</p>\n    </div>\n    <div class=\"card\">\n      <h2>Vertical cross-section</h2>\n      <canvas id=\"sec\" aria-label=\"Vertical cross-section through the vortex showing rotational wind and the in-up-out circulation\"></canvas>\n      <div class=\"legend\">\n        <span><i class=\"ramp\"></i>Rotational wind 0\u2013<span id=\"secMax\">\u2014</span> mph</span>\n        <span><i class=\"ln\" style=\"color:#e9efec\"></i>Streamlines</span>\n        <span><i class=\"ln d\" style=\"color:#e9efec\"></i>Funnel edge</span>\n      </div>\n      <p class=\"cap\">Averaged around the vortex, through its center. Air flows in along the ground and turns upward. When the spin is strong enough for the updraft, a downdraft forms on the axis (dashed streamlines) and the core splits into two cells. The breakdown marker is where the narrow lower vortex abruptly widens.</p>\n    </div>\n  </section>\n\n  <section class=\"lower\">\n    <div class=\"card\">\n      <h2>Radial profile</h2>\n      <canvas id=\"prof\" aria-label=\"Wind speed and pressure drop versus distance from the center\"></canvas>\n      <div class=\"legend\">\n        <span><i class=\"ln\" style=\"color:var(--accent)\"></i>Rotational, at ground</span>\n        <span><i class=\"ln\" style=\"color:var(--muted)\"></i>Rotational, aloft</span>\n        <span><i class=\"ln d\" style=\"color:var(--hot)\"></i>Right of track</span>\n        <span><i class=\"ln\" style=\"color:var(--press)\"></i>Pressure drop at ground</span>\n      </div>\n      <p class=\"cap\">The gap between the ground and aloft curves is the corner flow. Below a vortex breakdown, the surface vortex contracts and can spin up to about twice as fast.</p>\n    </div>\n    <div class=\"card\">\n      <h2>What sets the structure</h2>\n      <p class=\"cap\">Two things compete in the vortex: the circulation of the air flowing in, and the volume of air the updraft lifts each second. When the updraft wins, the vortex stays a tight one-cell jet. When rotation wins, the core can't hold all that spin, so air from aloft is forced down the middle and the core widens.</p>\n      <ol class=\"cap\" style=\"padding-left:18px;display:grid;gap:6px;margin:0\">\n        <li><b>Weak spin.</b> One-cell vortex. Air rises along the axis. Near-ground winds are close to the winds aloft.</li>\n        <li><b>Stronger spin.</b> A vortex breakdown appears aloft and descends as the spin grows. Below it, a narrow end-wall vortex spins up, peaking at about 2\u00d7 when the breakdown is just above the ground.</li>\n        <li><b>Strong spin.</b> The breakdown reaches the ground. Two-cell core: a central downdraft surrounded by a ring of rising air.</li>\n      </ol>\n    </div>\n  </section>\n\n  <section class=\"card notes\">\n    <div style=\"display:grid;gap:10px\">\n      <h2>What the model does</h2>\n      <ol>\n        <li><b>Rotation.</b> Burgers\u2013Rott profile in the one-cell parts of the vortex, Sullivan two-cell profile above a breakdown and wherever the breakdown has reached the ground. Both carry the same circulation, set by the wind and core radius aloft.</li>\n        <li><b>In-up-out flow.</b> A streamfunction, so mass is conserved exactly: an inflow layer feeding a Gaussian updraft of radius r\u2080, plus a central downdraft that descends to the breakdown's stagnation point and turns outward. The updraft speed comes from the balance of circulation to updraft volume (the swirl ratio) rather than being set by hand.</li>\n        <li><b>Corner flow.</b> Below a breakdown, the near-ground core contracts at constant circulation. The amplification peaks at about 2\u00d7 when the breakdown sits just above the surface, matching LES results.</li>\n        <li><b>Unsteadiness.</b> The spin-to-updraft balance drifts around the preset's value, on time scales of a few rotation periods, so the breakdown climbs and descends and the vortex moves between regimes. The lower vortex wanders around its mean position while the top stays anchored to the cloud.</li>\n        <li><b>Pressure and funnel.</b> Cyclostrophic balance, <code>dp/dr = \u03c1v\u00b2/r</code>, integrated at each height. Air condenses where the pressure drop equals the drop from that height to cloud base, <code>\u03c1g(z<sub>LCL</sub> \u2212 z)</code>.</li>\n      </ol>\n    </div>\n    <div style=\"display:grid;gap:10px\">\n      <h2>Limits</h2>\n      <ul>\n        <li>The regime thresholds come from laboratory vortex chambers. Real tornadoes can't be measured this way directly.</li>\n        <li>Core growth with spin follows lab and LES trends but is fitted, not solved.</li>\n        <li>No surface roughness, turbulence closure, or rear-flank downdraft. The unsteadiness is imposed (a random drift in the spin-to-updraft balance and a wandering axis), not generated by the flow itself.</li>\n        <li>Unsteady corner-flow collapse can briefly push winds well past 2\u00d7 in LES. That isn't modeled.</li>\n      </ul>\n      <p class=\"refs\">Thresholds after Church et al. (1979) and Davies-Jones (1986). Corner-flow limit from <a href=\"https://ams.confex.com/ams/pdfpapers/115321.pdf\" target=\"_blank\" rel=\"noopener\">Lewellen &amp; Lewellen, On the limits to near-surface intensification of tornado vortices</a>. Regime sequence also in <a href=\"https://windeng.t.u-tokyo.ac.jp/ishihara/e/paper/2019-11.pdf\" target=\"_blank\" rel=\"noopener\">Ishihara et al.</a></p>\n    </div>\n  </section>\n</div>";
+const BODY = "<div class=\"wrap\">\n  <header>\n    <div class=\"eyebrow\">Swirl ratio \u00b7 corner flow \u00b7 vortex breakdown \u00b7 suction vortices</div>\n    <h1>Tornado Vortex Lab</h1>\n    <p class=\"lede\">A tornado built from its wind field. Swirl ratio, the balance between how much the air spins and how fast the updraft pulls it in, sets the vortex's structure: a narrow one-cell jet, a breakdown bubble aloft, a two-cell core with a central downdraft, or a ring of suction vortices. The funnel is wherever the resulting pressure drop makes rising air condense. Swirl drifts over time, so the structure keeps changing as you watch.</p>\n  </header>\n\n  <section class=\"bench\">\n    <div class=\"stagecol\">\n      <div class=\"stage\">\n        <canvas id=\"side\" aria-label=\"Side view of the simulated tornado, looking north\"></canvas>\n        <span class=\"tag tl\">Looking north \u00b7 storm moving east</span>\n        <span class=\"tag tr\" id=\"scaleTag\">\u2014</span>\n      </div>\n      <dl class=\"read\" aria-live=\"polite\">\n        <div class=\"wide\"><dt>Peak ground-relative wind</dt><dd><span id=\"rPeak\">\u2014</span><span class=\"ef\" id=\"rEF\">\u2014</span><small id=\"rPeakSub\">\u2014</small></dd></div>\n        <div class=\"wide\"><dt>Vortex structure</dt><dd><span id=\"rReg\">\u2014</span><small id=\"rRegSub\">\u2014</small></dd></div>\n        <div><dt>Lowest pressure</dt><dd id=\"rDp\">\u2014</dd></div>\n        <div><dt>Needed to condense at ground</dt><dd id=\"rNeed\">\u2014</dd></div>\n        <div><dt>Vortex breakdown</dt><dd id=\"rBd\">\u2014</dd></div>\n        <div><dt>Updraft</dt><dd id=\"rUp\">\u2014</dd></div>\n        <div><dt>Condensation funnel</dt><dd id=\"rFun\">\u2014</dd></div>\n        <div><dt>EF0+ path width</dt><dd id=\"rPath\">\u2014</dd></div>\n        <div><dt>Suction vortices</dt><dd id=\"rSub\">\u2014</dd></div>\n        <div><dt>Updraft radius</dt><dd id=\"rR0\">\u2014</dd></div>\n      </dl>\n      <div class=\"card\">\n        <div class=\"cardhead\">\n          <h2>Last 60 seconds</h2>\n          <div class=\"legend\">\n            <span><i class=\"ln\" style=\"color:var(--ink)\"></i>Swirl ratio</span>\n            <span><i class=\"ln\" style=\"color:var(--hot)\"></i>Peak ground wind</span>\n            <span><i class=\"ln d\" style=\"color:var(--accent)\"></i>Breakdown height, ground to cloud base</span>\n          </div>\n        </div>\n        <canvas id=\"hist\" aria-label=\"Swirl ratio, peak ground wind and breakdown height over the last 60 seconds\"></canvas>\n      </div>\n    </div>\n\n    <aside class=\"rack\" aria-label=\"Controls\">\n      <div style=\"display:grid;gap:8px\">\n        <h2>Presets</h2>\n        <div class=\"presets\" role=\"group\" aria-label=\"Presets\">\n          <button data-p=\"rope\">Rope</button>\n          <button data-p=\"classic\" aria-pressed=\"true\">Classic</button>\n          <button data-p=\"multi\">Multivortex</button>\n          <button data-p=\"wedge\">Wedge</button>\n          <button data-p=\"high\">High base</button>\n        </div>\n      </div>\n\n      <div class=\"sliders\">\n        <div class=\"sl swirl\">\n          <label for=\"sw\">Swirl ratio</label><output id=\"o_sw\"></output>\n          <input type=\"range\" id=\"sw\" min=\"0\" max=\"100\" step=\"1\">\n          <div class=\"ladder\" aria-hidden=\"true\">\n            <i style=\"width:9.5%;background:var(--rg1)\"></i><i style=\"width:15.8%;background:var(--rg2)\"></i><i style=\"width:34.7%;background:var(--rg3)\"></i><i style=\"width:40%;background:var(--rg4)\"></i>\n          </div>\n          <div class=\"ticks\" aria-hidden=\"true\">\n            <span style=\"left:0%\">0.05</span><span style=\"left:9.5%\">0.2</span><span style=\"left:25.3%\">0.45</span><span style=\"left:60%\">1</span><span style=\"left:80%\">2</span><span style=\"left:100%\">3</span>\n          </div>\n          <div class=\"rkey\">\n            <span><i class=\"sw\" style=\"background:var(--rg1)\"></i>One-cell</span>\n            <span><i class=\"sw\" style=\"background:var(--rg2)\"></i>Breakdown aloft</span>\n            <span><i class=\"sw\" style=\"background:var(--rg3)\"></i>Two-cell</span>\n            <span><i class=\"sw\" style=\"background:var(--rg4)\"></i>Multiple vortices</span>\n          </div>\n        </div>\n        <div class=\"sl\"><label for=\"un\">Unsteadiness</label><output id=\"o_un\"></output><input type=\"range\" id=\"un\" min=\"0\" max=\"100\" step=\"5\" value=\"50\"></div>\n        <div class=\"sl\"><label for=\"vrot\">Rotational wind aloft</label><output id=\"o_vrot\"></output><input type=\"range\" id=\"vrot\" min=\"20\" max=\"250\" step=\"1\"></div>\n        <div class=\"sl\"><label for=\"rc\">Core radius aloft</label><output id=\"o_rc\"></output><input type=\"range\" id=\"rc\" min=\"15\" max=\"500\" step=\"5\"></div>\n        <div class=\"sl\"><label for=\"zc\">Cloud base above ground</label><output id=\"o_zc\"></output><input type=\"range\" id=\"zc\" min=\"500\" max=\"5000\" step=\"50\"></div>\n        <div class=\"sl\"><label for=\"vt\">Forward speed</label><output id=\"o_vt\"></output><input type=\"range\" id=\"vt\" min=\"0\" max=\"60\" step=\"1\"></div>\n      </div>\n\n      <div class=\"row\">\n        <span>Precipitation</span>\n        <div class=\"seg\" role=\"group\" aria-label=\"Precipitation\">\n          <button data-r=\"lp\">Low</button><button data-r=\"classic\" aria-pressed=\"true\">Classic</button><button data-r=\"hp\">High</button>\n        </div>\n      </div>\n      <div class=\"row\">\n        <label><input type=\"checkbox\" id=\"air\" checked> Airflow tracers</label>\n        <label><input type=\"checkbox\" id=\"deb\" checked> Debris</label>\n        <label><input type=\"checkbox\" id=\"ltg\" checked> Lightning</label>\n      </div>\n      <div class=\"row\">\n        <button id=\"play\">Pause</button>\n        <div class=\"seg\" role=\"group\" aria-label=\"Playback speed\">\n          <button data-s=\"0.25\">\u00bc\u00d7</button><button data-s=\"0.5\">\u00bd\u00d7</button><button data-s=\"1\" aria-pressed=\"true\">1\u00d7</button><button data-s=\"2\">2\u00d7</button>\n        </div>\n      </div>\n    </aside>\n  </section>\n\n  <section class=\"lower\">\n    <div class=\"card\">\n      <div class=\"cardhead\">\n        <h2>Ground winds from above</h2>\n        <div class=\"seg\" role=\"group\" aria-label=\"Plan view mode\" style=\"margin-left:0\">\n          <button data-m=\"live\" aria-pressed=\"true\">Live</button><button data-m=\"swath\">Damage swath</button>\n        </div>\n      </div>\n      <canvas id=\"plan\" aria-label=\"Plan view of ground-relative wind speed, shaded by EF category\"></canvas>\n      <div class=\"legend\" id=\"efLegend\"></div>\n      <p class=\"cap\" id=\"planCap\">Ground-relative wind near the surface, north up. Forward motion adds to the rotation on the right (south) side of the track. Suction vortices show up as hot spots orbiting the core.</p>\n    </div>\n    <div class=\"card\">\n      <h2>Vertical cross-section</h2>\n      <canvas id=\"sec\" aria-label=\"Vertical cross-section through the vortex showing rotational wind and the in-up-out circulation\"></canvas>\n      <div class=\"legend\">\n        <span><i class=\"ramp\"></i>Rotational wind 0\u2013<span id=\"secMax\">\u2014</span> mph</span>\n        <span><i class=\"ln\" style=\"color:#e9efec\"></i>Streamlines</span>\n        <span><i class=\"ln d\" style=\"color:#e9efec\"></i>Funnel edge</span>\n      </div>\n      <p class=\"cap\">Averaged around the vortex, through its center. Air flows in along the ground and turns upward. When the swirl is high enough, a downdraft forms on the axis (dashed streamlines) and the core splits into two cells. The breakdown marker is where the narrow lower vortex abruptly widens.</p>\n    </div>\n  </section>\n\n  <section class=\"lower\">\n    <div class=\"card\">\n      <h2>Radial profile</h2>\n      <canvas id=\"prof\" aria-label=\"Wind speed and pressure drop versus distance from the center\"></canvas>\n      <div class=\"legend\">\n        <span><i class=\"ln\" style=\"color:var(--accent)\"></i>Rotational, at ground</span>\n        <span><i class=\"ln\" style=\"color:var(--muted)\"></i>Rotational, aloft</span>\n        <span><i class=\"ln d\" style=\"color:var(--hot)\"></i>Right of track</span>\n        <span><i class=\"ln\" style=\"color:var(--press)\"></i>Pressure drop at ground</span>\n      </div>\n      <p class=\"cap\">The gap between the ground and aloft curves is the corner flow. Below a vortex breakdown, the surface vortex contracts and can spin up to about twice as fast. Suction vortices add on top of these averaged winds in narrow spots.</p>\n    </div>\n    <div class=\"card\">\n      <h2>What swirl ratio sets</h2>\n      <div class=\"formula\">S = r\u2080 \u0393 / 2Q</div>\n      <p class=\"cap\">r\u2080 is the updraft radius, \u0393 the circulation of the inflowing air, and Q the volume of air the updraft lifts each second. Low S means the updraft wins and the vortex stays a tight one-cell jet. High S means rotation wins: the core can't hold all that spin, so air from aloft is forced down the middle, the core widens, and the shear around it rolls up into suction vortices.</p>\n      <ol class=\"cap\" style=\"padding-left:18px;display:grid;gap:6px;margin:0\">\n        <li><b>Below about 0.2.</b> One-cell vortex. Air rises along the axis. Near-ground winds are close to the winds aloft.</li>\n        <li><b>About 0.2 to 0.45.</b> A vortex breakdown appears aloft and descends as S rises. Below it, a narrow end-wall vortex spins up, peaking at about 2\u00d7 when the breakdown is just above the ground.</li>\n        <li><b>About 0.45 to 1.</b> The breakdown reaches the ground. Two-cell core: a central downdraft surrounded by a ring of rising air.</li>\n        <li><b>Above about 1.</b> Multiple vortices: 2, then 3 up to about 6 suction vortices as S keeps rising.</li>\n      </ol>\n    </div>\n  </section>\n\n  <section class=\"card notes\">\n    <div style=\"display:grid;gap:10px\">\n      <h2>What the model does</h2>\n      <ol>\n        <li><b>Rotation.</b> Burgers\u2013Rott profile in the one-cell parts of the vortex, Sullivan two-cell profile above a breakdown and wherever the breakdown has reached the ground. Both carry the same circulation, set by the wind and core radius aloft.</li>\n        <li><b>In-up-out flow.</b> A streamfunction, so mass is conserved exactly: an inflow layer feeding a Gaussian updraft of radius r\u2080, plus a central downdraft that descends to the breakdown's stagnation point and turns outward. The updraft speed comes from the swirl ratio, S = \u0393r\u2080/2Q, rather than being set by hand.</li>\n        <li><b>Corner flow.</b> Below a breakdown, the near-ground core contracts at constant circulation. The amplification peaks at about 2\u00d7 when the breakdown sits just above the surface, matching LES results.</li>\n        <li><b>Suction vortices.</b> Above S \u2248 1, a set of tilted subvortices orbits near the core radius at roughly half the parent's peak speed. Each carries its own rotation, pressure drop, and updraft, so they condense into their own tubes, loft debris, and leave cycloidal marks in the damage swath.</li>\n        <li><b>Unsteadiness.</b> Swirl ratio drifts around the value you set, on time scales of a few rotation periods, so the breakdown climbs and descends and the vortex moves between regimes. The lower vortex wanders around its mean position while the top stays anchored to the cloud. Above S \u2248 1, suction vortices form in the widest gap around the core, live for roughly one orbit, and decay. At zero unsteadiness they sit in a fixed ring.</li>\n        <li><b>Pressure and funnel.</b> Cyclostrophic balance, <code>dp/dr = \u03c1v\u00b2/r</code>, integrated at each height. Air condenses where the pressure drop equals the drop from that height to cloud base, <code>\u03c1g(z<sub>LCL</sub> \u2212 z)</code>.</li>\n      </ol>\n    </div>\n    <div style=\"display:grid;gap:10px\">\n      <h2>Limits</h2>\n      <ul>\n        <li>Swirl ratio thresholds come from laboratory vortex chambers. Real tornadoes can't be measured this way directly, and other definitions of S shift the numbers.</li>\n        <li>Core growth, subvortex count, spin and orbit speed follow lab and LES trends but are fitted, not solved.</li>\n        <li>No surface roughness, turbulence closure, or rear-flank downdraft. The unsteadiness is imposed (a random drift in swirl ratio, a wandering axis, subvortex lifetimes), not generated by the flow itself.</li>\n        <li>Unsteady corner-flow collapse can briefly push winds well past 2\u00d7 in LES. That isn't modeled.</li>\n      </ul>\n      <p class=\"refs\">Thresholds after Church et al. (1979) and Davies-Jones (1986). Corner-flow limit from <a href=\"https://ams.confex.com/ams/pdfpapers/115321.pdf\" target=\"_blank\" rel=\"noopener\">Lewellen &amp; Lewellen, On the limits to near-surface intensification of tornado vortices</a>. Regime sequence also in <a href=\"https://windeng.t.u-tokyo.ac.jp/ishihara/e/paper/2019-11.pdf\" target=\"_blank\" rel=\"noopener\">Ishihara et al.</a></p>\n    </div>\n  </section>\n</div>";
 
 export function mountTornado(root: HTMLElement): () => void {
   root.innerHTML = BODY;
@@ -21,14 +20,11 @@ export function mountTornado(root: HTMLElement): () => void {
   const EFT = [65, 86, 111, 136, 166, 201];
   const EFC = ['#4cc3ff', '#3ccf6e', '#ffd23f', '#ff9a2e', '#ef4040', '#e655d6'];
   const S_BD = 0.2, S_TD = 0.45, S_MV = 1.0;
-  // Shelved: the swirl-ratio slider and the multiple-vortex regime (suction vortices). The code stays; swirl is now an
-  // internal quantity fixed by each preset and kept below S_MV, so no subvortices form.
-  const SHELVE_MV = true, SW_MAX = SHELVE_MV ? S_MV - 0.02 : 3.5;
   const PRESETS = {
     rope:    { vrot: 90,  rc: 25,  zc: 1200, vt: 20, sw: 0.30 },
     classic: { vrot: 140, rc: 90,  zc: 1250, vt: 30, sw: 0.60 },
     multi:   { vrot: 125, rc: 170, zc: 1000, vt: 30, sw: 1.50 },
-    wedge:   { vrot: 150, rc: 330, zc: 1000, vt: 25, sw: 0.85 },
+    wedge:   { vrot: 150, rc: 330, zc: 1000, vt: 25, sw: 2.40 },
     high:    { vrot: 105, rc: 60,  zc: 4500, vt: 15, sw: 0.15 }
   };
   const S = Object.assign({}, PRESETS.classic);
@@ -141,7 +137,7 @@ export function mountTornado(root: HTMLElement): () => void {
     M.lean = (vt / (60 * MPH)) * 0.22 * zc;
     M.vg = 0; for (let i = 0; i <= NR; i++) M.vg = Math.max(M.vg, vAt(M.rT[i], M.lvRc[0], M.lvTau[0]));
     // suction vortices: target count from swirl, spin and size from a continuous count
-    M.n = (SHELVE_MV || sw < S_MV) ? 0 : Math.min(6, 2 + Math.floor((sw - S_MV) / 0.4 + 1e-9));
+    M.n = sw < S_MV ? 0 : Math.min(6, 2 + Math.floor((sw - S_MV) / 0.4 + 1e-9));
     const nu = Math.max(2, Math.min(6, 2 + (sw - S_MV) / 0.4));
     M.ro = rc;
     M.vp0 = vAt(rc, M.lvRc[0], M.lvTau[0]);
@@ -149,8 +145,7 @@ export function mountTornado(root: HTMLElement): () => void {
     M.vsPeak = M.vp0 * 0.5 * Math.pow(2 / nu, 0.4);
     M.rs = rc * 0.28 / Math.sqrt(nu / 2);
     M.Hs = clamp(2.5 * rc, 60, 0.8 * zc);
-    // helical lean: the ropes wrap round the parent at about 45 degrees, so they read as horizontal-ish vortices
-    M.tilt = clamp(M.Hs / M.ro, 1.0, 3.0);
+    M.tilt = 0.8;
     M.tubeTop = new Float64Array(AMPS.length);
     for (let a = 0; a < AMPS.length; a++) {
       const o = a * NZ, am = AMPS[a];
@@ -364,7 +359,7 @@ export function mountTornado(root: HTMLElement): () => void {
     FL.ou += -FL.ou / tauOU * dt + 0.6 * Math.sqrt(2 * dt / tauOU) * gauss();
     const per = [2, 3.3, 5.4];
     const F = 0.6 * (0.5 * Math.sin(TAU2 * FL.t / (per[0] * Tr) + FL.ph[0]) + 0.3 * Math.sin(TAU2 * FL.t / (per[1] * Tr) + FL.ph[1]) + 0.2 * Math.sin(TAU2 * FL.t / (per[2] * Tr) + FL.ph[2])) + 0.4 * FL.ou;
-    return clamp(S.sw * Math.exp(0.45 * unsteady * F), 0.05, SW_MAX);
+    return clamp(S.sw * Math.exp(0.45 * unsteady * F), 0.05, 3.5);
   }
   function wobble(dt) {
     const Aw = unsteady * M.rc * (0.45 - 0.25 * Math.min(S.sw, 1)), tau = 2 * TAU2 * M.rc / M.V;
@@ -699,59 +694,34 @@ export function mountTornado(root: HTMLElement): () => void {
     ctx.drawImage(FC, bx0, by0, bw, bh, bx0 * SC_, by0 * SC_, bw * SC_, bh * SC_);
   }
   const STOPS = [0, .12, .3, .5, .7, .88, 1];
-  function tubeRow(ctx, cx, py, rr, hgt, dust, alphaK, shade = 1) {
+  function tubeRow(ctx, cx, py, rr, hgt, dust, alphaK) {
     const g = ctx.createLinearGradient(cx - rr, 0, cx + rr, 0);
     for (const k of STOPS) {
       const u = 2 * k - 1, nz = Math.sqrt(Math.max(0, 1 - u * u));
-      const lum = (0.4 + 0.5 * Math.max(0, -0.55 * u + 0.83 * nz)) * shade;
+      const lum = 0.4 + 0.5 * Math.max(0, -0.55 * u + 0.83 * nz);
       const a = (0.25 + 0.65 * Math.pow(nz, 0.55)) * clamp(rr / 3, 0.4, 1) * alphaK;
       const R = (210 * (1 - dust) + 150 * dust) * lum, Gc = (214 * (1 - dust) + 124 * dust) * lum, B = (217 * (1 - dust) + 96 * dust) * lum;
       g.addColorStop(k, `rgba(${R | 0},${Gc | 0},${B | 0},${a.toFixed(3)})`);
     }
     ctx.fillStyle = g; ctx.fillRect(cx - rr, py, 2 * rr, hgt);
   }
-  /** Where a suction vortex sits at height z for drawing: on the parent funnel's surface where there is one, so the
-   * rope reads as a helical ridge wrapped round the funnel, and free-standing below the funnel's bottom. */
-  function svOrbit(z) {
-    const rf = rfAt(z);
-    return rf > 0 ? Math.max(rf * 0.97, 0.6 * M.ro) : M.ro;
-  }
   function drawTubes(ctx, front) {
     if (!svAct.length) return;
     const { Hg, X0, s } = VW, zc = M.zc;
     const dustOn = clamp((AN.peak / MPH - 85) / 40, 0, 1);
-    const rCap = 0.8 * M.rs;   // thin ropes, not cones
     for (let q0 = 0; q0 < svAct.length; q0++) {
       const k = svAct[q0], amp = SVt.amp[k], top = tubeTopAt(amp);
       if (top <= 0) continue;
-      // above its own condensation the vortex is still there, wrapped round the parent: on the funnel's surface it
-      // carries on as a helical ridge in the skin, fading out over a few core heights, so no rope ends at a cut
-      const zEnd = Math.min(0.85 * zc, Math.max(top, top + 3 * M.Hs));
       for (let py = Hg; py >= Hg - zc * s; py -= 2) {
-        const z = (Hg - py) / s; if (z >= zEnd) break;
-        const rf = rfAt(z), onFunnel = rf > 0;
-        if (z >= top && !onFunnel) break;
-        let rt;
-        if (z < top) {
-          rt = Math.min(tubeAt(z, amp), rCap);
-          if (!(rt > 0)) continue;
-          // a rope ending in the air (no funnel above it) tapers to a point; on the funnel it keeps its width
-          if (!onFunnel) rt *= Math.pow(clamp((top - z) / (0.5 * top), 0, 1), 0.7);
-          else { const w = sstep(0.5 * top, top, z); rt = Math.max(rt, 0.5 * rCap) * (1 - w) + 0.5 * rCap * w; }
-        } else rt = 0.5 * rCap;
+        const z = (Hg - py) / s; if (z >= top) break;
+        const rt = tubeAt(z, amp); if (!(rt > 0)) continue;
         const a = SVt.th[k] - M.tilt * z / M.Hs;
-        const sn = Math.sin(a);
-        if ((sn < 0) !== front) continue;
+        if ((Math.sin(a) < 0) !== front) continue;
         const rr = rt * s; if (rr < 0.4) continue;
-        const ro = svOrbit(z);
-        const cx = X0 + (axX(z) + ro * Math.cos(a)) * s;
+        const cx = X0 + (axX(z) + M.ro * Math.cos(a)) * s;
         const dust = clamp(1 - z / (0.14 * zc), 0, 1) * dustOn;
-        // fade: free rope over its top half; ridge over the stretch above the condensation top
-        const fade = onFunnel ? clamp((zEnd - z) / Math.max(zEnd - top, 1), 0, 1) : clamp((top - z) / (0.5 * top), 0, 1);
-        const limb = onFunnel ? clamp(Math.abs(sn) * 1.4, 0.25, 1) : 1;
-        const alpha = (front ? 0.7 : 0.4) * limb * Math.sqrt(fade);
-        if (onFunnel && front) { tubeRow(ctx, cx + rr * 0.35, py - 2, rr * 1.15, 2.4, dust, alpha * 0.8, 0.72); tubeRow(ctx, cx - rr * 0.3, py - 2, rr * 0.5, 2.4, dust, alpha * 0.9, 1.12); }
-        else tubeRow(ctx, cx, py - 2, rr, 2.4, dust, alpha * (onFunnel ? 0.6 : 1));
+        const fade = clamp((top - z) / (0.35 * top), 0, 1);
+        tubeRow(ctx, cx, py - 2, rr, 2.4, dust, (front ? 0.95 : 0.7) * Math.sqrt(fade));
       }
     }
   }
@@ -762,20 +732,19 @@ export function mountTornado(root: HTMLElement): () => void {
   let pfNext = 0;
   function spawnPuffs(dt) {
     if (!showDebris) return;
-    // the debris cloud hugs the vortex: spawn within about 1.5 core radii, and only where the wind is strong
-    const Rsp = Math.max(1.5 * M.rc, svAct.length ? M.ro + 1.5 * M.rs : 0);
-    const tries = Math.round(600 * dt + Math.random());
-    for (let k = 0; k < tries && pfCount < 260; k++) {
+    const Rsp = Math.max(2.5 * M.rc, svAct.length ? M.ro + 3 * M.rs : 0);
+    const tries = Math.round(1100 * dt + Math.random());
+    for (let k = 0; k < tries && pfCount < 480; k++) {
       const r = Rsp * Math.sqrt(Math.random()), th = Math.random() * TAU2, x = r * Math.cos(th), y = r * Math.sin(th);
       vel(x, y, 2, tmp);
-      const mph = Math.hypot(tmp[0] + M.vt, tmp[1]) / MPH, p = clamp((mph - 85) / 80, 0, 1);
+      const mph = Math.hypot(tmp[0] + M.vt, tmp[1]) / MPH, p = clamp((mph - 70) / 70, 0, 1);
       if (Math.random() > p) continue;
       let i = -1;
       for (let n = 0; n < NPF; n++) { const j = (pfNext + n) % NPF; if (!PF.on[j]) { i = j; break; } }
       if (i < 0) return; pfNext = i + 1;
       PF.on[i] = 1; PF.x[i] = axX(1) + x; PF.y[i] = axY(1) + y; PF.z[i] = 1 + Math.random() * 4;
       PF.vx[i] = tmp[0] * 0.5; PF.vy[i] = tmp[1] * 0.5; PF.vz[i] = 2 + Math.random() * 6;
-      PF.sz0[i] = PF.sz[i] = Math.max(3, (0.07 + 0.1 * Math.random()) * M.rc);
+      PF.sz0[i] = PF.sz[i] = Math.max(3, (0.09 + 0.12 * Math.random()) * M.rc);
       PF.age[i] = 0; PF.life[i] = 3 + Math.random() * 5; pfCount++;
       PF.kind[i] = Math.random() < 0.2 + 0.35 * p ? 1 : 0; PF.spr[i] = (Math.random() * 3) | 0;
     }
@@ -793,7 +762,7 @@ export function mountTornado(root: HTMLElement): () => void {
       let dx = PF.vx[i] * dt, dy = PF.vy[i] * dt, dz = PF.vz[i] * dt;
       const L = Math.hypot(dx, dy, dz); if (L > cap) { const f = cap / L; dx *= f; dy *= f; dz *= f; }
       PF.x[i] += dx; PF.y[i] += dy; PF.z[i] = Math.max(0.5, z + dz);
-      PF.sz[i] += PF.sz0[i] * 0.35 * dt; PF.age[i] += dt;
+      PF.sz[i] += PF.sz0[i] * 0.55 * dt; PF.age[i] += dt;
       if (PF.age[i] > PF.life[i]) PF.on[i] = 0; else pfCount++;
     }
   }
@@ -804,14 +773,14 @@ export function mountTornado(root: HTMLElement): () => void {
     if (c.width !== w2 || c.height !== h2) { c.width = w2; c.height = h2; }
     const ctx = c.getContext('2d'); ctx.clearRect(0, 0, w2, h2);
     const X0 = VW.X0 / 2, Hg = VW.Hg / 2, s = VW.s / 2, zc = M.zc, dustOn = clamp((AN.peak / MPH - 85) / 40, 0, 1);
-    const h0 = (0.1 + 0.15 * dustOn) * zc, h1 = (0.25 + 0.2 * dustOn) * zc;
+    const h0 = (0.15 + 0.2 * dustOn) * zc, h1 = (0.35 + 0.25 * dustOn) * zc;
     let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
     for (let i = 0; i < NPF; i++) {
       if (!PF.on[i]) continue;
       const z = PF.z[i];
       if (((PF.y[i] - axY(z)) < 0) !== front) continue;
       const a = PF.age[i] / PF.life[i];
-      const al = (PF.kind[i] ? 0.3 : 0.2) * sstep(0, 0.12, a) * (1 - sstep(0.55, 1, a)) * (1 - sstep(h0, h1, z));
+      const al = (PF.kind[i] ? 0.42 : 0.3) * sstep(0, 0.12, a) * (1 - sstep(0.55, 1, a)) * (1 - sstep(h0, h1, z));
       if (al < 0.01) continue;
       const dpx = clamp(PF.sz[i] * 2 * s, 2, 70), spr = PF.kind[i] ? PUFF.dark[PF.spr[i] % 2] : PUFF.dust[PF.spr[i]];
       const px = X0 + PF.x[i] * s - dpx / 2, py = Hg - z * s - dpx / 2;
@@ -1294,36 +1263,26 @@ export function mountTornado(root: HTMLElement): () => void {
     ctx.clearRect(0, 0, w, h);
     const ink = tok('--ink'), muted = tok('--muted'), line = tok('--line'), hot = tok('--hot'), acc = tok('--accent');
     const rg = [tok('--rg1'), tok('--rg2'), tok('--rg3'), tok('--rg4')];
-    const ml = 44, mr = 44, mt = 8, mb = 20, pw = w - ml - mr, ph = h - mt - mb;
+    const ml = 34, mr = 44, mt = 8, mb = 20, pw = w - ml - mr, ph = h - mt - mb;
     let smax = S.sw * 1.6, pmax = 0;
     for (let i = 0; i < HS.n; i++) { smax = Math.max(smax, HS.s[i] * 1.1); pmax = Math.max(pmax, HS.pk[i]); }
     const sStep = niceStep(smax, 3), sTop = Math.ceil(smax / sStep) * sStep;
     const pStep = niceStep(Math.max(pmax * 1.1, 80), 3), pTop = Math.ceil(Math.max(pmax * 1.1, 80) / pStep) * pStep;
-    const zTopFt = S.zc, zStep = niceStep(zTopFt, 3);
     const X = i => ml + pw - (HS.n - 1 - i) * HDT / 60 * pw;
-    const Ys = v => mt + ph - v / sTop * ph, Yp = v => mt + ph - v / pTop * ph, Yz = f => mt + ph - f * ph;
+    const Ys = v => mt + ph - v / sTop * ph, Yp = v => mt + ph - v / pTop * ph;
+    const bands = [[0, S_BD], [S_BD, S_TD], [S_TD, S_MV], [S_MV, 99]];
+    ctx.globalAlpha = 0.22;
+    bands.forEach((b, k) => { const y1 = Ys(Math.min(b[1], sTop)), y0 = Ys(b[0]); if (b[0] < sTop) { ctx.fillStyle = rg[k]; ctx.fillRect(ml, y1, pw, y0 - y1); } });
+    ctx.globalAlpha = 1;
     ctx.font = '10.5px "JetBrains Mono", monospace'; ctx.lineWidth = 1; ctx.textBaseline = 'middle';
-    if (SHELVE_MV) {
-      // left axis: breakdown height above ground, up to cloud base
-      for (let v = 0; v <= zTopFt + 1e-6; v += zStep) {
-        const y = Yz(v / zTopFt);
-        ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(ml, y); ctx.lineTo(ml + pw, y); ctx.stroke();
-        ctx.fillStyle = acc; ctx.textAlign = 'right'; ctx.fillText(v >= 1000 ? `${(v / 1000).toFixed(v % 1000 ? 1 : 0)}k` : `${v}`, ml - 5, y);
-      }
-    } else {
-      const bands = [[0, S_BD], [S_BD, S_TD], [S_TD, S_MV], [S_MV, 99]];
-      ctx.globalAlpha = 0.22;
-      bands.forEach((b, k) => { const y1 = Ys(Math.min(b[1], sTop)), y0 = Ys(b[0]); if (b[0] < sTop) { ctx.fillStyle = rg[k]; ctx.fillRect(ml, y1, pw, y0 - y1); } });
-      ctx.globalAlpha = 1;
-      for (let v = 0; v <= sTop + 1e-6; v += sStep) {
-        ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(ml, Ys(v)); ctx.lineTo(ml + pw, Ys(v)); ctx.stroke();
-        ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.fillText(v.toFixed(sStep < 1 ? 1 : 0), ml - 5, Ys(v));
-      }
+    for (let v = 0; v <= sTop + 1e-6; v += sStep) {
+      ctx.strokeStyle = line; ctx.beginPath(); ctx.moveTo(ml, Ys(v)); ctx.lineTo(ml + pw, Ys(v)); ctx.stroke();
+      ctx.fillStyle = muted; ctx.textAlign = 'right'; ctx.fillText(v.toFixed(sStep < 1 ? 1 : 0), ml - 5, Ys(v));
     }
     ctx.textAlign = 'left'; ctx.fillStyle = hot;
     for (let v = 0; v <= pTop + 1e-6; v += pStep) ctx.fillText(Math.round(v), ml + pw + 5, Yp(v));
     ctx.textBaseline = 'top'; ctx.fillStyle = muted;
-    ctx.textAlign = 'left'; ctx.fillText(SHELVE_MV ? 'ft   −60 s' : '−60 s', ml - (SHELVE_MV ? 30 : 0), mt + ph + 5);
+    ctx.textAlign = 'left'; ctx.fillText('−60 s', ml, mt + ph + 5);
     ctx.textAlign = 'right'; ctx.fillText('now', ml + pw, mt + ph + 5);
     ctx.textAlign = 'center'; ctx.fillText('mph', w - mr / 2 + 4, mt + ph + 5);
     if (HS.n < 2) return;
@@ -1336,9 +1295,9 @@ export function mountTornado(root: HTMLElement): () => void {
       }
       ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.setLineDash(dash); ctx.stroke(); ctx.setLineDash([]);
     };
-    line2(HS.zb, Yz, acc, 1.5, [4, 3], true);
+    line2(HS.zb, v => mt + ph - v * ph, acc, 1.5, [4, 3], true);
     line2(HS.pk, Yp, hot, 1.6, [], false);
-    if (!SHELVE_MV) line2(HS.s, Ys, ink, 2, [], false);
+    line2(HS.s, Ys, ink, 2, [], false);
     ctx.restore();
   }
 
@@ -1349,9 +1308,9 @@ export function mountTornado(root: HTMLElement): () => void {
     const ef = $('rEF');
     if (k >= 0) { ef.hidden = false; ef.textContent = `EF${k}`; ef.style.background = EFC[k]; } else ef.hidden = true;
     const parts = [`${Math.round(AN.vg / MPH)} mph rotation at ground`];
-    if (M.n > 0) parts.push('suction vortex spin');
+    if (S.sw >= S_MV) parts.push('suction vortex spin');
     if (S.vt > 0) parts.push(`${S.vt} forward`);
-    let sub = (SHELVE_MV ? '' : `At S = ${S.sw.toFixed(2)}: `) + parts.join(' + ') + '.';
+    let sub = `At S = ${S.sw.toFixed(2)}: ` + parts.join(' + ') + '.';
     if (unsteady > 0 && maxSoFar > 0) sub += ` Highest gust so far ${Math.round(maxSoFar / MPH)} mph.`;
     if (peak > 300) sub += ' Beyond the strongest radar-measured tornado winds.';
     $('rPeakSub').textContent = sub;
@@ -1361,12 +1320,12 @@ export function mountTornado(root: HTMLElement): () => void {
     else if (M.sw < S_TD) { name = 'Breakdown aloft'; rs = `Narrow one-cell vortex below the breakdown, wider turbulent two-cell core above. Ground winds ${fac}× aloft.`; }
     else if (M.sw < S_MV) { name = 'Two-cell vortex'; rs = 'Breakdown has reached the ground. A central downdraft is ringed by rising air.'; }
     else { name = `Multiple vortices · ${M.n}`; rs = `Two-cell parent with suction vortices orbiting near the core radius.`; }
-    if (unsteady > 0 && !SHELVE_MV) rs = `Swirl ratio now ${sNow}. ` + rs;
+    if (unsteady > 0) rs = `Swirl ratio now ${sNow}. ` + rs;
     $('rReg').textContent = name; $('rRegSub').textContent = rs;
     $('rDp').innerHTML = `${Math.round(M.dpMin / 100)} mb<small>${M.n && M.dpMin > M.dp0 + 1 ? 'Inside a suction vortex' : 'At the center, ground level'}</small>`;
     $('rNeed').innerHTML = `${Math.round(M.need0 / 100)} mb`;
     let bd;
-    if (M.zb === Infinity) bd = 'None<small>Spin too weak for the updraft</small>';
+    if (M.zb === Infinity) bd = 'None<small>Swirl too low</small>';
     else if (M.zb <= 1) bd = 'At ground<small>Stagnation point on the surface</small>';
     else if (M.zb >= 0.98 * M.zc) bd = 'Cloud base<small>Just forming aloft</small>';
     else bd = `${Math.round(M.zb / FT).toLocaleString()} ft<small>Above ground</small>`;
@@ -1377,14 +1336,13 @@ export function mountTornado(root: HTMLElement): () => void {
     if (M.zBot < 1) fun.innerHTML = 'Touches down<small>Condensed to the ground</small>';
     else if (M.tubeGround) fun.innerHTML = 'Subvortex tubes<small>Parent funnel ' + Math.round(M.zBot / FT).toLocaleString() + ' ft up</small>';
     else fun.innerHTML = `${Math.round(M.zBot / FT).toLocaleString()} ft<small>Gap between tip and ground</small>`;
-    $('rPath').innerHTML = AN.pathW > 0 ? `${Math.round(AN.pathW / YD).toLocaleString()} yd<small>Winds of 65 mph or more${SHELVE_MV ? '' : `, at S = ${S.sw.toFixed(2)}`}</small>` : 'None<small>Below EF0 winds</small>';
+    $('rPath').innerHTML = AN.pathW > 0 ? `${Math.round(AN.pathW / YD).toLocaleString()} yd<small>Winds of 65 mph or more, at S = ${S.sw.toFixed(2)}</small>` : 'None<small>Below EF0 winds</small>';
     let live = 0; for (let q = 0; q < svAct.length; q++) if (SVt.amp[svAct[q]] > 0.5) live++;
-    if ($('rSub')) $('rSub').innerHTML = (M.n || live) ? `${live}<small>${unsteady > 0 ? `Target ${M.n}. ` : ''}${Math.round(M.vsPeak / MPH)} mph spin, orbiting at ${Math.round(M.Om * M.ro / MPH)} mph</small>` : 'None<small>Form above S ≈ 1</small>';
+    $('rSub').innerHTML = (M.n || live) ? `${live}<small>${unsteady > 0 ? `Target ${M.n}. ` : ''}${Math.round(M.vsPeak / MPH)} mph spin, orbiting at ${Math.round(M.Om * M.ro / MPH)} mph</small>` : 'None<small>Form above S ≈ 1</small>';
     $('rR0').innerHTML = `${Math.round(M.r0 / YD).toLocaleString()} yd<small>${(M.r0 / M.rc).toFixed(1)}× the core radius</small>`;
-    $('scaleTag').textContent = SHELVE_MV ? `Cloud base ${Math.round(S.zc).toLocaleString()} ft` : unsteady > 0 ? `S = ${sNow} now · set ${S.sw.toFixed(2)}` : `S = ${S.sw.toFixed(2)} · cloud base ${Math.round(S.zc).toLocaleString()} ft`;
+    $('scaleTag').textContent = unsteady > 0 ? `S = ${sNow} now · set ${S.sw.toFixed(2)}` : `S = ${S.sw.toFixed(2)} · cloud base ${Math.round(S.zc).toLocaleString()} ft`;
   }
-  const units = SHELVE_MV ? {} : { sw: v => p2s(+v).toFixed(2) };
-  Object.assign(units, { vrot: v => `${v} mph`, rc: v => `${v} yd`, zc: v => `${Number(v).toLocaleString()} ft`, vt: v => `${v} mph` });
+  const units = { sw: v => p2s(+v).toFixed(2), vrot: v => `${v} mph`, rc: v => `${v} yd`, zc: v => `${Number(v).toLocaleString()} ft`, vt: v => `${v} mph` };
   function syncInputs() {
     for (const k in units) {
       $(k).value = k === 'sw' ? Math.round(s2p(S.sw)) : S[k];
@@ -1452,8 +1410,8 @@ export function mountTornado(root: HTMLElement): () => void {
     planMode = b.dataset.m;
     document.querySelectorAll('[data-m]').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
     $('planCap').textContent = planMode === 'live'
-      ? 'Ground-relative wind near the surface, north up. Forward motion adds to the rotation on the right (south) side of the track.'
-      : 'Highest wind each patch of ground has felt so far, as the tornado moves east. The wandering core makes the swath ragged.';
+      ? 'Ground-relative wind near the surface, north up. Forward motion adds to the rotation on the right (south) side of the track. Suction vortices show up as hot spots orbiting the core.'
+      : 'Highest wind each patch of ground has felt so far, as the tornado moves east. Suction vortices leave looping cycloidal marks, and the wandering core makes the swath ragged.';
     renderPlan();
   }));
   document.querySelectorAll('[data-r]').forEach(b => b.addEventListener('click', () => {
@@ -1483,7 +1441,7 @@ export function mountTornado(root: HTMLElement): () => void {
   const __L = app.link;
   if (__L && __L.params) {
     const p = __L.params;
-    S.zc = clamp(p.zc, 500, 5000); S.vt = clamp(p.vt, 0, 60); S.rc = clamp(p.rc, 15, 500); S.sw = clamp(p.sw, 0.05, SW_MAX);
+    S.zc = clamp(p.zc, 500, 5000); S.vt = clamp(p.vt, 0, 60); S.rc = clamp(p.rc, 15, 500); S.sw = clamp(p.sw, 0.05, 3);
     precip = p.precip;
     document.querySelectorAll('[data-r]').forEach(x => x.setAttribute('aria-pressed', x.dataset.r === precip ? 'true' : 'false'));
     document.querySelectorAll('[data-p]').forEach(x => x.setAttribute('aria-pressed', 'false'));
@@ -1494,7 +1452,7 @@ export function mountTornado(root: HTMLElement): () => void {
     const ban = document.createElement('div');
     ban.className = 'card'; ban.style.cssText = 'grid-template-columns:minmax(0,1fr) auto;align-items:center;border-color:var(--accent)';
     const kind = __L.label === 'roll' ? 'A tornado rolled from your storm' : __L.label === 'sim' ? 'The tornado from your simulated storm' : 'The typical tornado from your storm';
-    ban.innerHTML = `<div><b>${kind}</b><p class="cap">Peak winds near ${p.peakMph} mph. Cloud base ${Number(p.zc).toLocaleString()} ft, moving ${p.vt} mph, ${p.precip === 'hp' ? 'HP (rain-wrapped)' : p.precip === 'lp' ? 'LP' : 'classic'} storm, from an environment with STP ${__L.stp.toFixed(1)}. Core size and structure follow from the storm's rotation and updraft. The sliders below hold these values; change them freely.</p></div><div class="row" style="gap:8px"><a href="#storm" style="color:var(--accent);font-weight:500">Back to the storm</a><button type="button" id="__unlink">Use presets instead</button></div>`;
+    ban.innerHTML = `<div><b>${kind}</b><p class="cap">Peak winds near ${p.peakMph} mph. Cloud base ${Number(p.zc).toLocaleString()} ft, moving ${p.vt} mph, ${p.precip === 'hp' ? 'HP (rain-wrapped)' : p.precip === 'lp' ? 'LP' : 'classic'} storm, from an environment with STP ${__L.stp.toFixed(1)}. Swirl ratio and core size follow from the storm's rotation and updraft. The sliders below hold these values; change them freely.</p></div><div class="row" style="gap:8px"><a href="#storm" style="color:var(--accent);font-weight:500">Back to the storm</a><button type="button" id="__unlink">Use presets instead</button></div>`;
     root.querySelector('.bench').before(ban);
     ban.querySelector('#__unlink').addEventListener('click', () => { app.link = null; ban.remove(); Object.assign(S, PRESETS.classic); precip = 'classic'; document.querySelectorAll('[data-r]').forEach(x => x.setAttribute('aria-pressed', x.dataset.r === 'classic' ? 'true' : 'false')); document.querySelectorAll('[data-p]').forEach(x => x.setAttribute('aria-pressed', x.dataset.p === 'classic' ? 'true' : 'false')); syncInputs(); settle(); });
   }
